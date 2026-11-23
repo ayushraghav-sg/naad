@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.Dhwani" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="colorPrimary">@color/indigo</item>
+        <item name="colorPrimaryDark">@color/indigo</item>
+        <item name="colorAccent">@color/saffron</item>
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@color/indigo</item>
+    </style>
+</resources>

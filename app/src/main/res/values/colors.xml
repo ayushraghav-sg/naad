@@ -1,0 +1,12 @@
+<resources>
+    <color name="indigo">#2E2A6B</color>
+    <color name="indigo_soft">#E9E7F5</color>
+    <color name="saffron">#E8771E</color>
+    <color name="saffron_soft">#FCEBDD</color>
+    <color name="rec_red">#C8361E</color>
+    <color name="bg">#F7F6F2</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="text">#1C1B29</color>
+    <color name="muted">#6B6880</color>
+    <color name="line">#E4E2EC</color>
+</resources>

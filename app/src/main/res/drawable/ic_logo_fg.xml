@@ -1,0 +1,10 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- waveform bars rising from a bindu (dot) -->
+    <path android:fillColor="#F7F6F2" android:pathData="M33,48h6v12h-6z"/>
+    <path android:fillColor="#F7F6F2" android:pathData="M42,40h6v28h-6z"/>
+    <path android:fillColor="#E8771E" android:pathData="M51,30h6v48h-6z"/>
+    <path android:fillColor="#F7F6F2" android:pathData="M60,40h6v28h-6z"/>
+    <path android:fillColor="#F7F6F2" android:pathData="M69,48h6v12h-6z"/>
+    <path android:fillColor="#E8771E" android:pathData="M54,80m-3,0a3,3 0,1 1,6 0a3,3 0,1 1,-6 0"/>
+</vector>
