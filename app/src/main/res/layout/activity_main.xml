@@ -3,24 +3,29 @@
     android:layout_width="match_parent" android:layout_height="match_parent"
     android:orientation="vertical" android:background="@color/bg">
 
-    <!-- Top bar -->
-    <LinearLayout android:layout_width="match_parent" android:layout_height="56dp"
-        android:background="@color/indigo" android:gravity="center_vertical"
-        android:paddingStart="16dp" android:paddingEnd="8dp" android:orientation="horizontal">
-        <TextView android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="@string/app_name"
-            android:textColor="#FFFFFF" android:textSize="20sp" android:textStyle="bold"/>
-        <TextView android:id="@+id/txtFolder" android:layout_width="wrap_content"
-            android:layout_height="32dp" android:gravity="center_vertical"
-            android:paddingStart="12dp" android:paddingEnd="12dp" android:layout_marginEnd="8dp"
-            android:maxWidth="200dp" android:ellipsize="end" android:singleLine="true"
-            android:textColor="#FFFFFF" android:textSize="14sp"
-            android:background="@drawable/bg_topchip" android:text="App folder"/>
-    </LinearLayout>
+    <!-- Top bar (padded for status bar inset at runtime) -->
+    <FrameLayout android:id="@+id/topBar" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:background="@color/indigo">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="56dp"
+            android:gravity="center_vertical"
+            android:paddingStart="16dp" android:paddingEnd="8dp" android:orientation="horizontal">
+            <TextView android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="wrap_content" android:text="@string/app_name"
+                android:textColor="#FFFFFF" android:textSize="20sp" android:textStyle="bold"/>
+            <TextView android:id="@+id/txtFolder" android:layout_width="wrap_content"
+                android:layout_height="32dp" android:gravity="center_vertical"
+                android:paddingStart="12dp" android:paddingEnd="12dp" android:layout_marginEnd="8dp"
+                android:maxWidth="200dp" android:ellipsize="end" android:singleLine="true"
+                android:textColor="#FFFFFF" android:textSize="14sp"
+                android:background="@drawable/bg_topchip" android:text="App folder"/>
+        </LinearLayout>
+    </FrameLayout>
 
     <!-- Recorder card -->
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:layout_margin="16dp" android:padding="16dp" android:orientation="vertical"
+        android:layout_marginStart="16dp" android:layout_marginEnd="16dp"
+        android:layout_marginTop="12dp" android:layout_marginBottom="10dp"
+        android:padding="16dp" android:orientation="vertical"
         android:background="@drawable/bg_card">
         <TextView android:id="@+id/txtState" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:text="Ready to record"
@@ -121,37 +126,60 @@
             android:text="Newest" android:textColor="@color/muted" android:textSize="14sp"/>
     </LinearLayout>
 
+    <!-- Search recordings & transcripts -->
+    <LinearLayout android:id="@+id/searchBar" android:layout_width="match_parent"
+        android:layout_height="42dp" android:layout_marginStart="16dp" android:layout_marginEnd="16dp"
+        android:layout_marginTop="4dp" android:layout_marginBottom="4dp"
+        android:paddingStart="12dp" android:paddingEnd="4dp" android:gravity="center_vertical"
+        android:background="@drawable/bg_card" android:orientation="horizontal"
+        android:visibility="gone">
+        <ImageView android:layout_width="18dp" android:layout_height="18dp"
+            android:src="@drawable/ic_search" android:importantForAccessibility="no"/>
+        <EditText android:id="@+id/edSearch" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="match_parent" android:layout_marginStart="8dp"
+            android:background="@null" android:hint="Search names &amp; transcripts"
+            android:textColor="@color/text" android:textColorHint="@color/muted"
+            android:textSize="14sp" android:singleLine="true" android:imeOptions="actionSearch"
+            android:inputType="text"/>
+        <ImageButton android:id="@+id/btnClearSearch" android:layout_width="36dp"
+            android:layout_height="36dp" android:background="?attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_close" android:contentDescription="Clear search"
+            android:visibility="gone"/>
+    </LinearLayout>
+
     <FrameLayout android:layout_width="match_parent" android:layout_height="0dp"
         android:layout_weight="1">
         <ListView android:id="@+id/list" android:layout_width="match_parent"
             android:layout_height="match_parent" android:divider="@null"
-            android:paddingTop="8dp" android:clipToPadding="false"/>
+            android:paddingTop="4dp" android:clipToPadding="false"/>
         <TextView android:id="@+id/empty" android:layout_width="match_parent"
             android:layout_height="match_parent" android:gravity="center" android:padding="32dp"
             android:text="No recordings yet.\nTap the saffron button below to capture your first one. Recording continues even if you leave the app."
             android:textColor="@color/muted" android:textSize="14sp"/>
     </FrameLayout>
 
-    <!-- Bottom controls -->
-    <LinearLayout android:layout_width="match_parent" android:layout_height="112dp"
-        android:background="@color/surface" android:gravity="center"
-        android:orientation="horizontal">
-        <FrameLayout android:layout_width="56dp" android:layout_height="56dp">
-            <ImageButton android:id="@+id/btnSort" android:layout_width="56dp"
+    <!-- Bottom controls (padded for navigation bar inset at runtime) -->
+    <FrameLayout android:id="@+id/bottomBar" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:background="@color/surface">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="108dp"
+            android:gravity="center" android:orientation="horizontal">
+            <FrameLayout android:layout_width="56dp" android:layout_height="56dp">
+                <ImageButton android:id="@+id/btnSort" android:layout_width="56dp"
+                    android:layout_height="56dp" android:background="@drawable/bg_round_soft"
+                    android:src="@drawable/ic_sort" android:contentDescription="Sort recordings"/>
+                <ImageButton android:id="@+id/btnPause" android:layout_width="56dp"
+                    android:layout_height="56dp" android:background="@drawable/bg_round_soft"
+                    android:src="@drawable/ic_pause" android:contentDescription="Pause"
+                    android:visibility="gone"/>
+            </FrameLayout>
+            <ImageButton android:id="@+id/btnRecord" android:layout_width="80dp"
+                android:layout_height="80dp" android:layout_marginStart="32dp"
+                android:layout_marginEnd="32dp" android:background="@drawable/bg_rec_idle"
+                android:src="@drawable/ic_mic" android:scaleType="center"
+                android:contentDescription="Record"/>
+            <ImageButton android:id="@+id/btnSettings" android:layout_width="56dp"
                 android:layout_height="56dp" android:background="@drawable/bg_round_soft"
-                android:src="@drawable/ic_sort" android:contentDescription="Sort recordings"/>
-            <ImageButton android:id="@+id/btnPause" android:layout_width="56dp"
-                android:layout_height="56dp" android:background="@drawable/bg_round_soft"
-                android:src="@drawable/ic_pause" android:contentDescription="Pause"
-                android:visibility="gone"/>
-        </FrameLayout>
-        <ImageButton android:id="@+id/btnRecord" android:layout_width="80dp"
-            android:layout_height="80dp" android:layout_marginStart="32dp"
-            android:layout_marginEnd="32dp" android:background="@drawable/bg_rec_idle"
-            android:src="@drawable/ic_mic" android:scaleType="center"
-            android:contentDescription="Record"/>
-        <ImageButton android:id="@+id/btnSettings" android:layout_width="56dp"
-            android:layout_height="56dp" android:background="@drawable/bg_round_soft"
-            android:src="@drawable/ic_settings" android:contentDescription="Settings"/>
-    </LinearLayout>
+                android:src="@drawable/ic_settings" android:contentDescription="Settings"/>
+        </LinearLayout>
+    </FrameLayout>
 </LinearLayout>

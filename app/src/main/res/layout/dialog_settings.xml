@@ -8,6 +8,7 @@
         <TextView style="@style/SetHeading" android:text="File name"/>
         <EditText android:id="@+id/edPrefix" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:inputType="text" android:singleLine="true"
+            android:textColor="@color/text" android:textColorHint="@color/muted"
             android:hint="Recording"/>
         <TextView android:id="@+id/txtPreview" style="@style/SetLabel"/>
     </LinearLayout>
@@ -19,6 +20,8 @@
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
             android:gravity="center_vertical" android:orientation="horizontal">
             <TextView android:id="@+id/txtFolderName" style="@style/SetValue"/>
+            <TextView android:id="@+id/btnResetFolder" style="@style/SetAction"
+                android:text="Reset" android:textColor="@color/muted" android:visibility="gone"/>
             <TextView android:id="@+id/btnChangeFolder" style="@style/SetAction" android:text="Change"/>
         </LinearLayout>
         <View android:layout_width="match_parent" android:layout_height="1dp"
@@ -27,6 +30,8 @@
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
             android:gravity="center_vertical" android:orientation="horizontal">
             <TextView android:id="@+id/txtTxFolderName" style="@style/SetValue"/>
+            <TextView android:id="@+id/btnResetTxFolder" style="@style/SetAction"
+                android:text="Reset" android:textColor="@color/muted" android:visibility="gone"/>
             <TextView android:id="@+id/btnChangeTxFolder" style="@style/SetAction" android:text="Change"/>
         </LinearLayout>
     </LinearLayout>
@@ -72,6 +77,8 @@
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:gravity="center_vertical" android:orientation="horizontal">
                 <TextView android:id="@+id/txtModel" style="@style/SetValue" android:textSize="14sp"/>
+                <TextView android:id="@+id/btnCancelModel" style="@style/SetAction"
+                    android:text="Cancel" android:textColor="@color/muted" android:visibility="gone"/>
                 <TextView android:id="@+id/btnModel" style="@style/SetAction" android:text="Download"/>
             </LinearLayout>
             <TextView style="@style/SetLabel" android:layout_width="match_parent"
@@ -80,11 +87,38 @@
 
         <LinearLayout android:id="@+id/groqSection" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:orientation="vertical">
+            <TextView style="@style/SetLabel" android:layout_marginTop="16dp" android:text="Groq model"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:orientation="horizontal">
+                <TextView android:id="@+id/gTurbo" style="@style/Chip" android:text="Fast (Turbo)"/>
+                <TextView android:id="@+id/gLarge" style="@style/Chip" android:text="Accurate (v3)"
+                    android:layout_marginStart="8dp"/>
+            </LinearLayout>
+
+            <TextView style="@style/SetLabel" android:layout_marginTop="14dp" android:text="Language"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:orientation="horizontal">
+                <TextView android:id="@+id/gLangAuto" style="@style/Chip" android:text="Auto"/>
+                <TextView android:id="@+id/gLangEn" style="@style/Chip" android:text="English"
+                    android:layout_marginStart="8dp"/>
+                <TextView android:id="@+id/gLangHi" style="@style/Chip" android:text="Hindi"
+                    android:layout_marginStart="8dp"/>
+            </LinearLayout>
+
             <TextView style="@style/SetLabel" android:layout_marginTop="16dp" android:text="Groq API key"/>
-            <EditText android:id="@+id/edGroqKey" android:layout_width="match_parent"
-                android:layout_height="wrap_content" android:singleLine="true"
-                android:inputType="textPassword" android:hint="gsk_..."/>
-            <TextView style="@style/SetLabel" android:text="Get a free key at console.groq.com."/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:gravity="center_vertical" android:orientation="horizontal">
+                <EditText android:id="@+id/edGroqKey" android:layout_width="0dp" android:layout_weight="1"
+                    android:layout_height="wrap_content" android:singleLine="true"
+                    android:textColor="@color/text" android:textColorHint="@color/muted"
+                    android:inputType="textPassword" android:hint="gsk_..."/>
+                <TextView android:id="@+id/btnToggleKey" style="@style/SetAction"
+                    android:text="Show" android:textColor="@color/muted"/>
+                <TextView android:id="@+id/btnTestKey" style="@style/SetAction" android:text="Test"/>
+            </LinearLayout>
+            <TextView android:id="@+id/txtKeyStatus" style="@style/SetLabel"
+                android:layout_width="match_parent"
+                android:text="Stored encrypted on this phone. Get a free key at console.groq.com."/>
         </LinearLayout>
     </LinearLayout>
 </LinearLayout>

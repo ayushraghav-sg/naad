@@ -22,7 +22,7 @@
                     <TextView android:id="@+id/txtBadge" android:layout_width="wrap_content"
                         android:layout_height="wrap_content" android:background="@drawable/bg_badge"
                         android:paddingStart="6dp" android:paddingEnd="6dp"
-                        android:textColor="@color/indigo" android:textSize="12sp" android:textStyle="bold"/>
+                        android:textColor="@color/indigo_accent" android:textSize="12sp" android:textStyle="bold"/>
                     <TextView android:id="@+id/txtTxt" android:layout_width="wrap_content"
                         android:layout_height="wrap_content" android:layout_marginStart="6dp"
                         android:background="@drawable/bg_badge_saffron"
@@ -48,19 +48,25 @@
         <LinearLayout android:id="@+id/playRow" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:gravity="center_vertical"
             android:orientation="horizontal" android:visibility="gone">
-            <TextView android:id="@+id/btnBack10" android:layout_width="48dp"
+            <TextView android:id="@+id/btnBack10" android:layout_width="44dp"
                 android:layout_height="40dp" android:gravity="center" android:text="-10s"
-                android:textColor="@color/indigo" android:textSize="12sp" android:textStyle="bold"/>
+                android:textColor="@color/indigo_accent" android:textSize="12sp" android:textStyle="bold"/>
             <SeekBar android:id="@+id/seek" android:layout_width="0dp" android:layout_weight="1"
                 android:layout_height="32dp" android:progressDrawable="@drawable/seek_progress"
                 android:thumb="@drawable/seek_thumb" android:focusable="false"/>
             <TextView android:id="@+id/txtPos" android:layout_width="wrap_content"
-                android:layout_height="wrap_content" android:layout_marginEnd="8dp"
+                android:layout_height="wrap_content" android:layout_marginEnd="4dp"
                 android:textColor="@color/muted" android:textSize="12sp"
                 android:fontFeatureSettings="tnum"/>
-            <TextView android:id="@+id/btnFwd10" android:layout_width="48dp"
+            <TextView android:id="@+id/btnFwd10" android:layout_width="44dp"
                 android:layout_height="40dp" android:gravity="center" android:text="+10s"
-                android:textColor="@color/indigo" android:textSize="12sp" android:textStyle="bold"/>
+                android:textColor="@color/indigo_accent" android:textSize="12sp" android:textStyle="bold"/>
+            <TextView android:id="@+id/btnSpeed" android:layout_width="wrap_content"
+                android:minWidth="42dp" android:layout_height="30dp"
+                android:layout_marginStart="2dp" android:paddingStart="6dp" android:paddingEnd="6dp"
+                android:gravity="center" android:text="1x"
+                android:background="@drawable/bg_badge"
+                android:textColor="@color/indigo_accent" android:textSize="12sp" android:textStyle="bold"/>
         </LinearLayout>
     </LinearLayout>
 </FrameLayout>

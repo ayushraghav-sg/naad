@@ -2,102 +2,149 @@ package com.example.voicerecorder;
 
 import android.Manifest;
 import android.content.ActivityNotFoundException;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.graphics.Color;
 import android.media.MediaMetadataRetriever;
-import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.os.StatFs;
-import android.view.HapticFeedbackConstants;
 import android.provider.Settings;
 import android.text.Editable;
 import android.text.InputType;
-import android.text.SpannableString;
 import android.text.TextWatcher;
-import android.text.style.ForegroundColorSpan;
-import android.view.LayoutInflater;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
-import android.view.ViewGroup;
-import android.widget.BaseAdapter;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.ListView;
-import android.widget.SeekBar;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.annotation.NonNull;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.app.ActivityCompat;
+import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.text.SimpleDateFormat;
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Date;
-import java.util.HashMap;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class MainActivity extends AppCompatActivity
-        implements RecorderService.Listener, Transcriber.Listener {
+        implements RecorderService.Listener, Transcriber.Listener,
+        PlaybackController.Listener, SettingsSheet.Host {
 
-    private static final int REQ_PERMS = 101;
-    private static final int REQ_FOLDER = 102;
-    private static final int REQ_TXFOLDER = 103;
+    private static final String[] SORT_NAMES = {"Newest", "Oldest", "Name", "Longest"};
+    private static final String EMPTY_DEFAULT =
+            "No recordings yet.\nTap the saffron button below to capture your first one. Recording continues even if you leave the app.";
 
     private RecorderService svc;
-    private MediaPlayer player;
-    private File playingFile, lastSavedFile;
+    private PlaybackController playback;
+    private RecordingsAdapter adapter;
+    private SettingsSheet settingsSheet;
+    private File lastSavedFile;
     private boolean useMp3 = true;
-    private int quality = 1; // 0 = Voice, 1 = High
+    private int quality = 1; // 0 = Voice (64 kbps), 1 = High (128 kbps)
     private boolean seeking = false;
-
-    private ImageButton btnRecord, btnPause, btnSettings, btnSort;
-    private View notifBar;
-    private TextView txtFree, txtTranscript;
-    private NaadDialog approvalDialog;
-    private TextView chipTx, chipPrivate, transcriptLabel, txtSort;
-    private View transcriptBox;
-    private boolean privateNext;
-    private int ticks = 0;
-    private static final long LOW_SPACE = 50L * 1024 * 1024; // auto-stop below 50 MB
+    private boolean privateNext = false;
     private int sortMode = 0; // 0 newest, 1 oldest, 2 name, 3 longest
-    private final Runnable hideSaved = () -> this.savedBar.setVisibility(View.GONE);
+    private String searchQuery = "";
+    private int ticks = 0;
+    private boolean tickScheduled = false;
+
+    private ImageButton btnRecord, btnPause, btnSettings, btnSort, btnClearSearch;
+    private View notifBar, transcriptBox, savedBar, optionsRow, optionsRow2, searchBar;
+    private TextView txtFree, txtTranscript, transcriptLabel, txtSort, txtEmpty;
     private TextView txtTimer, txtState, txtFolder, txtListHeader;
-    private TextView chipMp3, chipM4a, chipVoice, chipHigh;
-    private View savedBar, optionsRow;
+    private TextView chipMp3, chipM4a, chipVoice, chipHigh, chipTx, chipPrivate;
+    private EditText edSearch;
     private WaveformView wave;
     private ListView list;
-    private final List<File> files = new ArrayList<>();
-    private final Map<String, Long> durationCache = new HashMap<>();
-    private RecAdapter adapter;
-    private SharedPreferences prefs;
-    private TextView settingsFolderName, settingsTxFolderName; // live labels inside settings
-    private TextView liveTv;          // open transcript page, updated live
-    private String liveBase;
-    private android.widget.ScrollView liveScroll;
+    private NaadDialog approvalDialog;
 
+    private TextView liveTv;
+    private String liveBase;
+    private ScrollView liveScroll;
+
+    private SharedPreferences prefs;
+    private final List<RecordingsAdapter.Item> allItems = new ArrayList<>();
+    private final Map<String, Long> durationCache = new ConcurrentHashMap<>();
+    private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final AtomicInteger listGeneration = new AtomicInteger(0);
     private final Handler ui = new Handler(Looper.getMainLooper());
+
+    private final Runnable hideSaved = () -> {
+        if (savedBar != null) savedBar.setVisibility(View.GONE);
+    };
+
+    private final ActivityResultLauncher<String[]> permLauncher =
+            registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(), res -> {
+                updateNotifBar();
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                        == PackageManager.PERMISSION_GRANTED) {
+                    startRecording();
+                } else {
+                    toast("Microphone permission is needed to record");
+                }
+            });
+
+    private final ActivityResultLauncher<Uri> audioFolderLauncher =
+            registerForActivityResult(new ActivityResultContracts.OpenDocumentTree(), tree -> {
+                if (tree == null) return;
+                persistTreePermission(tree);
+                prefs.edit().putString("folder", tree.toString()).apply();
+                txtFolder.setText(Storage.folderLabel(this));
+                if (settingsSheet != null) settingsSheet.refreshFolderLabels();
+            });
+
+    private final ActivityResultLauncher<Uri> txFolderLauncher =
+            registerForActivityResult(new ActivityResultContracts.OpenDocumentTree(), tree -> {
+                if (tree == null) return;
+                persistTreePermission(tree);
+                prefs.edit().putString("txFolder", tree.toString()).apply();
+                if (settingsSheet != null) settingsSheet.refreshFolderLabels();
+            });
 
     private final Runnable tick = new Runnable() {
         @Override public void run() {
+            boolean rec = svc != null && svc.isRecording();
+            boolean play = playback != null && playback.isPlaying();
+            if (!rec && !play) {
+                tickScheduled = false;
+                txtTimer.setAlpha(1f);
+                return;
+            }
             ticks++;
-            boolean blinkOn = (ticks / 8) % 2 == 0; // about every half second
-            if (svc != null && svc.isRecording()) {
+            boolean blinkOn = (ticks / 8) % 2 == 0;
+            if (rec) {
                 if (!svc.isPaused()) {
                     wave.add((float) Math.sqrt(svc.level()));
                     txtState.setText(blinkOn ? "\u25CF  REC" : "     REC");
@@ -105,15 +152,13 @@ public class MainActivity extends AppCompatActivity
                 } else {
                     txtTimer.setAlpha(blinkOn ? 1f : 0.35f);
                 }
-                txtTimer.setText(fmt(svc.elapsed()));
-                if (ticks % 80 == 0 && freeBytes() < LOW_SPACE) {
-                    toast("Storage almost full. Recording stopped and saved.");
-                    sendToService(RecorderService.ACTION_STOP);
-                }
+                txtTimer.setText(Formatters.fmtDuration(svc.elapsed()));
             } else {
                 txtTimer.setAlpha(1f);
             }
-            updatePlayback();
+            if (play && !seeking) {
+                adapter.updateVisiblePlayback(list);
+            }
             ui.postDelayed(this, 60);
         }
     };
@@ -122,24 +167,50 @@ public class MainActivity extends AppCompatActivity
         @Override public void onServiceConnected(ComponentName n, IBinder b) {
             svc = ((RecorderService.LocalBinder) b).get();
             svc.setListener(MainActivity.this);
+            String err = svc.takePendingError();
+            if (err != null) toast(err);
             File saved = svc.takeLastSaved();
             if (saved != null) showSaved(saved);
             renderRecordingState();
             refreshList();
+            ensureTicking();
         }
         @Override public void onServiceDisconnected(ComponentName n) { svc = null; }
     };
 
     @Override
+    @SuppressWarnings("deprecation")
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         setContentView(R.layout.activity_main);
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            getWindow().setStatusBarColor(ContextCompat.getColor(this, R.color.indigo));
+        }
+        WindowInsetsControllerCompat ic = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        if (ic != null) ic.setAppearanceLightStatusBars(false);
+
+        View topBar = findViewById(R.id.topBar);
+        View bottomBar = findViewById(R.id.bottomBar);
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content), (v, insets) -> {
+            Insets sys = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            topBar.setPadding(sys.left, sys.top, sys.right, 0);
+            bottomBar.setPadding(sys.left, 0, sys.right, sys.bottom);
+            return insets;
+        });
+
         prefs = Storage.prefs(this);
-        File oldModel = new File(getFilesDir(), "vosk-en"); // model folder from the previous version
-        if (oldModel.exists() && !LocalTranscriber.isReady(this, "small"))
+        File oldModel = new File(getFilesDir(), "vosk-en");
+        if (oldModel.exists() && !LocalTranscriber.isReady(this, "small")) {
             oldModel.renameTo(LocalTranscriber.modelDir(this, "small"));
+        }
         quality = prefs.getInt("quality", 1);
         useMp3 = prefs.getBoolean("mp3", true);
+        privateNext = prefs.getBoolean("privateNext", false);
+        sortMode = prefs.getInt("sort", 0);
+
+        playback = new PlaybackController(this, this);
+        settingsSheet = new SettingsSheet(this, this);
 
         btnRecord = findViewById(R.id.btnRecord);
         btnPause = findViewById(R.id.btnPause);
@@ -153,8 +224,40 @@ public class MainActivity extends AppCompatActivity
         chipTx = findViewById(R.id.chipTx);
         chipPrivate = findViewById(R.id.chipPrivate);
         txtSort = findViewById(R.id.txtSort);
-        privateNext = prefs.getBoolean("privateNext", false);
-        chipTx.setOnClickListener(v -> settingsDialog());
+        txtTimer = findViewById(R.id.txtTimer);
+        txtState = findViewById(R.id.txtState);
+        txtFolder = findViewById(R.id.txtFolder);
+        txtListHeader = findViewById(R.id.txtListHeader);
+        txtEmpty = findViewById(R.id.empty);
+        chipMp3 = findViewById(R.id.chipMp3);
+        chipM4a = findViewById(R.id.chipM4a);
+        chipVoice = findViewById(R.id.chipVoice);
+        chipHigh = findViewById(R.id.chipHigh);
+        savedBar = findViewById(R.id.savedBar);
+        optionsRow = findViewById(R.id.optionsRow);
+        optionsRow2 = findViewById(R.id.optionsRow2);
+        searchBar = findViewById(R.id.searchBar);
+        edSearch = findViewById(R.id.edSearch);
+        btnClearSearch = findViewById(R.id.btnClearSearch);
+        wave = findViewById(R.id.wave);
+        list = findViewById(R.id.list);
+        list.setEmptyView(txtEmpty);
+
+        adapter = new RecordingsAdapter(this, playback, new RecordingsAdapter.Callbacks() {
+            @Override public void onPlayToggle(File f) { togglePlay(f); }
+            @Override public void onMoreClick(View anchor, RecordingsAdapter.Item item) { itemMenu(item); }
+            @Override public void onTranscriptClick(File f) { openTranscript(Transcriber.stem(f.getName())); }
+            @Override public void onSkip(int deltaMs) {
+                playback.skip(deltaMs);
+                adapter.updateVisiblePlayback(list);
+            }
+            @Override public void onSeek(int positionMs) { playback.seekTo(positionMs); }
+            @Override public void onSeekingChanged(boolean s) { seeking = s; }
+            @Override public void onCycleSpeed() { playback.cycleSpeed(); }
+        });
+        list.setAdapter(adapter);
+
+        chipTx.setOnClickListener(v -> settingsSheet.show());
         chipPrivate.setOnClickListener(v -> {
             if (svc != null && svc.isRecording()) return;
             privateNext = !privateNext;
@@ -164,30 +267,13 @@ public class MainActivity extends AppCompatActivity
                     ? "Private: transcribed on this phone only"
                     : "Private: nothing leaves the phone. Download the model in Settings for transcripts.");
         });
-        txtSort.setOnClickListener(this::sortMenu);
+        txtSort.setOnClickListener(v -> sortMenu());
+        btnSort.setOnClickListener(v -> sortMenu());
         transcriptBox.setOnClickListener(v -> {
             String b0 = currentBase();
             if (b0 != null) openTranscript(b0);
         });
-        renderTxChip();
-        sortMode = prefs.getInt("sort", 0);
-        btnSort.setOnClickListener(this::sortMenu);
         findViewById(R.id.btnNotifOn).setOnClickListener(v -> openNotificationSettings());
-        txtTimer = findViewById(R.id.txtTimer);
-        txtState = findViewById(R.id.txtState);
-        txtFolder = findViewById(R.id.txtFolder);
-        txtListHeader = findViewById(R.id.txtListHeader);
-        chipMp3 = findViewById(R.id.chipMp3);
-        chipM4a = findViewById(R.id.chipM4a);
-        chipVoice = findViewById(R.id.chipVoice);
-        chipHigh = findViewById(R.id.chipHigh);
-        savedBar = findViewById(R.id.savedBar);
-        optionsRow = findViewById(R.id.optionsRow);
-        wave = findViewById(R.id.wave);
-        list = findViewById(R.id.list);
-        list.setEmptyView(findViewById(R.id.empty));
-        adapter = new RecAdapter();
-        list.setAdapter(adapter);
 
         btnRecord.setOnClickListener(v -> {
             buzz(v);
@@ -199,8 +285,8 @@ public class MainActivity extends AppCompatActivity
             buzz(v);
             if (svc.isPaused()) svc.resume(); else svc.pause();
         });
-        btnSettings.setOnClickListener(v -> settingsDialog());
-        txtFolder.setOnClickListener(v -> settingsDialog());
+        btnSettings.setOnClickListener(v -> settingsSheet.show());
+        txtFolder.setOnClickListener(v -> settingsSheet.show());
 
         chipMp3.setOnClickListener(v -> { useMp3 = true; savePrefs(); });
         chipM4a.setOnClickListener(v -> { useMp3 = false; savePrefs(); });
@@ -210,8 +296,21 @@ public class MainActivity extends AppCompatActivity
         findViewById(R.id.btnSavedWa).setOnClickListener(v -> { if (lastSavedFile != null) shareWhatsAppDocument(lastSavedFile); });
         findViewById(R.id.btnSavedRename).setOnClickListener(v -> { if (lastSavedFile != null) rename(lastSavedFile); });
 
+        edSearch.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            public void onTextChanged(CharSequence s, int a, int b, int c) { }
+            public void afterTextChanged(Editable s) {
+                searchQuery = s.toString().trim().toLowerCase(Locale.ROOT);
+                btnClearSearch.setVisibility(searchQuery.isEmpty() ? View.GONE : View.VISIBLE);
+                applyFilter();
+            }
+        });
+        btnClearSearch.setOnClickListener(v -> edSearch.setText(""));
+
         renderChips();
+        renderTxChip();
         txtFolder.setText(Storage.folderLabel(this));
+        txtFree.setText(freeText());
     }
 
     @Override
@@ -222,20 +321,65 @@ public class MainActivity extends AppCompatActivity
         updateNotifBar();
         Transcriber.get(this).setListener(this);
         checkPending();
-        ui.post(tick);
+        ensureTicking();
     }
 
     @Override
     protected void onStop() {
         super.onStop();
         ui.removeCallbacks(tick);
+        tickScheduled = false;
         if (svc != null) svc.setListener(null);
         Transcriber.get(this).setListener(null);
-        unbindService(conn);
+        try { unbindService(conn); } catch (Exception ignored) { }
         svc = null;
-        stopPlaying(); // recording keeps running in the service
+        // Playback intentionally continues while screen locks or user switches apps
     }
 
+    @Override
+    protected void onDestroy() {
+        ui.removeCallbacksAndMessages(null);
+        if (playback != null) playback.release();
+        io.shutdownNow();
+        super.onDestroy();
+    }
+
+    private void ensureTicking() {
+        boolean need = (svc != null && svc.isRecording()) || (playback != null && playback.isPlaying());
+        if (need && !tickScheduled) {
+            tickScheduled = true;
+            ui.post(tick);
+        }
+    }
+
+    private void persistTreePermission(Uri tree) {
+        try {
+            getContentResolver().takePersistableUriPermission(tree,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        } catch (SecurityException ignored) { }
+    }
+
+    // ---------- SettingsSheet.Host ----------
+    @Override public boolean isUsingMp3() { return useMp3; }
+    @Override public void onPickAudioFolder() { audioFolderLauncher.launch(null); }
+    @Override public void onPickTranscriptFolder() { txFolderLauncher.launch(null); }
+    @Override public void onSettingsClosed() {
+        txtFolder.setText(Storage.folderLabel(this));
+        renderTxChip();
+    }
+
+    // ---------- PlaybackController.Listener ----------
+    @Override public void onPlaybackChanged() {
+        adapter.notifyDataSetChanged();
+        ensureTicking();
+    }
+
+    @Override public void onPlaybackError(String message) {
+        toast(message);
+        adapter.notifyDataSetChanged();
+    }
+
+    // ---------- Prefs & chips ----------
     private void savePrefs() {
         if (svc != null && svc.isRecording()) return;
         prefs.edit().putBoolean("mp3", useMp3).putInt("quality", quality).apply();
@@ -259,26 +403,20 @@ public class MainActivity extends AppCompatActivity
                 != PackageManager.PERMISSION_GRANTED) need.add(Manifest.permission.RECORD_AUDIO);
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this,
                 Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            need.add(Manifest.permission.POST_NOTIFICATIONS); // Android stops asking after 2 refusals
+            need.add(Manifest.permission.POST_NOTIFICATIONS);
         }
         if (need.isEmpty()) startRecording();
-        else ActivityCompat.requestPermissions(this, need.toArray(new String[0]), REQ_PERMS);
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int rc, @NonNull String[] p, @NonNull int[] g) {
-        super.onRequestPermissionsResult(rc, p, g);
-        if (rc != REQ_PERMS) return;
-        updateNotifBar();
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-                == PackageManager.PERMISSION_GRANTED) startRecording();
-        else toast("Microphone permission is needed to record");
+        else permLauncher.launch(need.toArray(new String[0]));
     }
 
     // ---------- Recording (via service) ----------
     private void startRecording() {
-        if (freeBytes() < LOW_SPACE * 2) { toast("Not enough storage to record. Free up some space."); return; }
-        stopPlaying();
+        if (Storage.freeBytes(this) < RecorderService.LOW_SPACE * 2) {
+            toast("Not enough storage to record. Free up some space.");
+            return;
+        }
+        playback.stop();
+        adapter.notifyDataSetChanged();
         Intent i = new Intent(this, RecorderService.class)
                 .setAction(RecorderService.ACTION_START)
                 .putExtra(RecorderService.EXTRA_MP3, useMp3)
@@ -291,6 +429,7 @@ public class MainActivity extends AppCompatActivity
         transcriptBox.setVisibility(View.GONE);
         wave.clear();
         wave.setVisibility(View.VISIBLE);
+        ensureTicking();
     }
 
     private void sendToService(String action) {
@@ -308,16 +447,17 @@ public class MainActivity extends AppCompatActivity
         btnPause.setImageResource(paused ? R.drawable.ic_resume : R.drawable.ic_pause);
         btnPause.setContentDescription(paused ? "Resume" : "Pause");
         optionsRow.setAlpha(rec ? 0.4f : 1f);
-        findViewById(R.id.optionsRow2).setAlpha(rec ? 0.4f : 1f);
+        optionsRow2.setAlpha(rec ? 0.4f : 1f);
         wave.setActive(rec && !paused);
         wave.setVisibility(rec || savedBar.getVisibility() == View.VISIBLE ? View.VISIBLE : View.GONE);
         if (rec) {
             savedBar.setVisibility(View.GONE);
             txtState.setText(paused ? "PAUSED" : "\u25CF  REC");
-            txtFree.setText(svc.currentFile().getName());
+            File cur = svc.currentFile();
+            if (cur != null) txtFree.setText(cur.getName());
             txtState.setTextColor(ContextCompat.getColor(this,
                     paused ? R.color.muted : R.color.rec_red));
-            txtTimer.setText(fmt(svc.elapsed()));
+            txtTimer.setText(Formatters.fmtDuration(svc.elapsed()));
         } else {
             txtState.setTextColor(ContextCompat.getColor(this, R.color.muted));
             if (savedBar.getVisibility() != View.VISIBLE) {
@@ -328,7 +468,10 @@ public class MainActivity extends AppCompatActivity
         }
     }
 
-    @Override public void onStateChanged() { renderRecordingState(); }
+    @Override public void onStateChanged() {
+        renderRecordingState();
+        ensureTicking();
+    }
 
     @Override public void onError(String message) {
         toast(message);
@@ -337,25 +480,31 @@ public class MainActivity extends AppCompatActivity
 
     @Override public void onSaved(File file, boolean copied) {
         showSaved(file);
-        if (Storage.folderUri(this) != null && !copied)
+        if (Storage.folderUri(this) != null && !copied) {
             toast("Saved in app, but could not copy to your folder. Choose it again in Settings.");
+        }
     }
 
     private void showSaved(File f) {
         lastSavedFile = f;
         txtState.setTextColor(ContextCompat.getColor(this, R.color.muted));
         txtState.setText(f.getName());
-        txtTimer.setText(fmt(durationOf(f)));
         savedBar.setVisibility(View.VISIBLE);
         wave.setVisibility(View.VISIBLE);
         ui.removeCallbacks(hideSaved);
         ui.postDelayed(hideSaved, 20000);
+        io.execute(() -> {
+            long dur = durationOf(f);
+            ui.post(() -> {
+                if (f.equals(lastSavedFile) && (svc == null || !svc.isRecording())) {
+                    txtTimer.setText(Formatters.fmtDuration(dur));
+                }
+            });
+        });
         refreshList();
     }
 
-    private static final String[] SORT_NAMES = {"Newest", "Oldest", "Name", "Longest"};
-
-    private void sortMenu(View anchor) {
+    private void sortMenu() {
         NaadDialog d = new NaadDialog(this, NaadDialog.SHEET).title("Sort recordings");
         String[] names = {"Newest first", "Oldest first", "Name A to Z", "Longest first"};
         for (int i = 0; i < names.length; i++) {
@@ -368,12 +517,10 @@ public class MainActivity extends AppCompatActivity
         }
         d.show();
     }
-    private boolean notificationsAllowed() {
-        return androidx.core.app.NotificationManagerCompat.from(this).areNotificationsEnabled();
-    }
 
     private void updateNotifBar() {
-        notifBar.setVisibility(notificationsAllowed() ? View.GONE : View.VISIBLE);
+        boolean allowed = NotificationManagerCompat.from(this).areNotificationsEnabled();
+        notifBar.setVisibility(allowed ? View.GONE : View.VISIBLE);
     }
 
     private void openNotificationSettings() {
@@ -398,9 +545,9 @@ public class MainActivity extends AppCompatActivity
         int m = Storage.txMinutes(this);
         String every = m < 0 ? "full" : "every " + m + " min";
         String label;
-        if (privateNext) label = LocalTranscriber.isModelReady(this) ? "On device  ·  " + every : "Private: no transcript";
-        else if ("groq".equals(mode)) label = "Groq  ·  " + every;
-        else if ("local".equals(mode)) label = "On device  ·  " + every;
+        if (privateNext) label = LocalTranscriber.isModelReady(this) ? "On device  \u00b7  " + every : "Private: no transcript";
+        else if ("groq".equals(mode)) label = "Groq  \u00b7  " + every;
+        else if ("local".equals(mode)) label = "On device  \u00b7  " + every;
         else label = "Transcribe: Off";
         chipTx.setText(label);
         chipTx.setBackgroundResource("off".equals(mode) && !privateNext ? R.drawable.bg_chip_off : R.drawable.bg_chip);
@@ -417,20 +564,25 @@ public class MainActivity extends AppCompatActivity
 
     @Override public void onTranscript(String base, String text) {
         File all = new File(Storage.recDir(this), base + ".txt");
-        String fileText = readText(all);
-        // Groq sends one part at a time (file has everything); on-device sends the full text so far
-        String full = fileText.length() >= text.length() ? fileText : text;
-        if (base.equals(liveBase) && liveTv != null) {
-            liveTv.setText(full.isEmpty() ? "Listening..." : full);
-            if (liveScroll != null) liveScroll.post(() -> liveScroll.fullScroll(View.FOCUS_DOWN));
-        }
-        if (base.equals(currentBase()) && !full.isEmpty()) {
-            String t = full.length() > 400 ? "..." + full.substring(full.length() - 400) : full;
-            boolean live = svc != null && svc.isRecording();
-            showTranscriptBox(live ? "TRANSCRIPT  \u00b7  LIVE  \u00b7  TAP FOR FULL VIEW" : "TRANSCRIPT  \u00b7  TAP TO OPEN", t, false);
-        }
-        if (svc == null || !svc.isRecording()) refreshList();
+        io.execute(() -> {
+            String fileText = readText(all);
+            String full = fileText.length() >= text.length() ? fileText : text;
+            ui.post(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                if (base.equals(liveBase) && liveTv != null) {
+                    liveTv.setText(full.isEmpty() ? "Listening..." : full);
+                    if (liveScroll != null) liveScroll.post(() -> liveScroll.fullScroll(View.FOCUS_DOWN));
+                }
+                if (base.equals(currentBase()) && !full.isEmpty()) {
+                    String t = full.length() > 400 ? "..." + full.substring(full.length() - 400) : full;
+                    boolean live = svc != null && svc.isRecording();
+                    showTranscriptBox(live ? "TRANSCRIPT  \u00b7  LIVE  \u00b7  TAP FOR FULL VIEW" : "TRANSCRIPT  \u00b7  TAP TO OPEN", t, false);
+                }
+                if (svc == null || !svc.isRecording()) refreshList();
+            });
+        });
     }
+
     @Override public void onStatus(String status) {
         if (status == null) return;
         if (transcriptBox.getVisibility() != View.VISIBLE || txtTranscript.getText().length() == 0
@@ -462,7 +614,6 @@ public class MainActivity extends AppCompatActivity
         if (LocalTranscriber.isModelReady(this))
             d.button("On device", NaadDialog.SECONDARY, () -> LocalTranscriber.transcribePending(this));
         d.button("Send", NaadDialog.PRIMARY, () -> Transcriber.get(this).approveAndSend());
-        // "Don't send" lives as a link-style row so the main choices stay clear
         TextView discard = new TextView(this);
         discard.setText("Don't transcribe these parts");
         discard.setTextColor(ContextCompat.getColor(this, R.color.muted));
@@ -481,74 +632,194 @@ public class MainActivity extends AppCompatActivity
 
     private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
 
-    private boolean isPrivate(File f) {
-        return prefs.getBoolean("private:" + Transcriber.stem(f.getName()), false);
-    }
-
     private void transcribeWithGroq(File f) {
-        String key = prefs.getString("groqKey", "");
-        if (key == null || key.trim().isEmpty()) { toast("Add your Groq API key in Settings first"); settingsDialog(); return; }
+        String key = Storage.groqKey(this);
+        if (key.isEmpty()) { toast("Add your Groq API key in Settings first"); settingsSheet.show(); return; }
         if (!Transcriber.get(this).isOnline()) { toast("No internet. Try again when online."); return; }
-        new File(Storage.recDir(this), Transcriber.stem(f.getName()) + ".txt").delete();
-        if (!Transcriber.get(this).queueWholeFile(f)) toast("File is larger than 25 MB, too big for Groq free tier");
-        else { lastSavedFile = f; toast("Sending to Groq..."); }
+        lastSavedFile = f;
+        Transcriber.get(this).queueWholeFile(f);
+        toast("Sending to Groq...");
     }
 
     private void transcribeOnDevice(File f) {
-        if (!LocalTranscriber.isModelReady(this)) { toast("Download the on-device model in Settings first"); settingsDialog(); return; }
+        if (!LocalTranscriber.isModelReady(this)) {
+            toast("Download the on-device model in Settings first");
+            settingsSheet.show();
+            return;
+        }
         lastSavedFile = f;
         LocalTranscriber.transcribeFile(this, f);
         toast("Transcribing on this phone...");
     }
 
-    private void viewTranscript(File txt) {
-        openTranscript(Transcriber.stem(txt.getName()));
-    }
-
-    /** Full-screen, scrollable transcript. Updates live while that recording is in progress. */
+    /** Full-screen, scrollable transcript. Loads off-UI-thread and updates live while recording. */
     private void openTranscript(String base) {
-        File txt = new File(Storage.recDir(this), base + ".txt");
-        String text = readText(txt);
-        if (text.isEmpty() && base.equals(currentBase()) && txtTranscript.getText().length() > 0
-                && txtTranscript.getCurrentTextColor() != ContextCompat.getColor(this, R.color.muted))
-            text = txtTranscript.getText().toString();
         boolean recordingThis = svc != null && svc.isRecording() && base.equals(currentBase());
+        String initial = "";
+        if (base.equals(currentBase()) && txtTranscript.getText().length() > 0
+                && txtTranscript.getCurrentTextColor() != ContextCompat.getColor(this, R.color.muted)) {
+            initial = txtTranscript.getText().toString();
+        }
 
         TextView tv = new TextView(this);
         tv.setTextIsSelectable(true);
         tv.setTextColor(ContextCompat.getColor(this, R.color.text));
         tv.setTextSize(17);
         tv.setLineSpacing(0, 1.35f);
-        tv.setText(text.isEmpty() ? (recordingThis ? "Listening..." : "No speech was found in this recording.") : text);
+        tv.setText(initial.isEmpty() ? (recordingThis ? "Listening..." : "Loading...") : initial);
         int pad = dp(16);
         tv.setPadding(pad, pad, pad, pad);
         tv.setBackgroundResource(R.drawable.bg_card);
 
         NaadDialog d = new NaadDialog(this, NaadDialog.FULL).title(recordingThis ? "Live transcript" : "Transcript");
         TextView sub = new TextView(this);
-        sub.setText(displayNameOf(base) + (recordingThis ? "  \u00b7  updating as you speak" : ""));
+        sub.setText(Formatters.displayName(base + ".mp3") + (recordingThis ? "  \u00b7  updating as you speak" : ""));
         sub.setTextColor(ContextCompat.getColor(this, R.color.muted));
         sub.setTextSize(13);
         sub.setPadding(dp(4), 0, 0, dp(12));
         d.view(sub, false).view(tv, false);
         d.button("Copy", NaadDialog.SECONDARY, true, () -> {
-            android.content.ClipboardManager cm =
-                    (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-            cm.setPrimaryClip(android.content.ClipData.newPlainText("Transcript", tv.getText()));
-            toast("Copied");
+            ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(ClipData.newPlainText("Transcript", tv.getText()));
+                toast("Copied");
+            }
         });
         d.button("Share", NaadDialog.PRIMARY, true, () -> shareText(tv.getText().toString()));
         liveBase = base;
         liveTv = tv;
         d.onDismiss(() -> { liveTv = null; liveBase = null; liveScroll = null; });
         d.show();
+
         View p = tv.getParent() instanceof View ? (View) tv.getParent() : null;
-        while (p != null && !(p instanceof android.widget.ScrollView))
+        while (p != null && !(p instanceof ScrollView))
             p = p.getParent() instanceof View ? (View) p.getParent() : null;
-        liveScroll = (android.widget.ScrollView) p;
-        if (recordingThis && liveScroll != null) liveScroll.post(() -> liveScroll.fullScroll(View.FOCUS_DOWN));
+        liveScroll = (ScrollView) p;
+
+        File txt = new File(Storage.recDir(this), base + ".txt");
+        io.execute(() -> {
+            String loaded = readText(txt);
+            ui.post(() -> {
+                if (liveTv != tv) return;
+                if (!loaded.isEmpty()) {
+                    tv.setText(loaded);
+                } else if ("Loading...".contentEquals(tv.getText())) {
+                    tv.setText(recordingThis ? "Listening..." : "No speech was found in this recording.");
+                }
+                if (recordingThis && liveScroll != null) {
+                    liveScroll.post(() -> liveScroll.fullScroll(View.FOCUS_DOWN));
+                }
+            });
+        });
     }
 
+    // ---------- Recordings List & Search ----------
+    private void refreshList() {
+        final int gen = listGeneration.incrementAndGet();
+        final File activeRec = (svc != null && svc.isRecording()) ? svc.currentFile() : null;
+        final int currentSort = sortMode;
+        io.execute(() -> {
+            File dir = Storage.recDir(this);
+            File[] arr = dir.listFiles((d, n) -> n.endsWith(".m4a") || n.endsWith(".mp3"));
+            List<RecordingsAdapter.Item> built = new ArrayList<>();
+            if (arr != null) {
+                for (File f : arr) {
+                    if (f.equals(activeRec)) continue;
+                    String base = Transcriber.stem(f.getName());
+                    File txtFile = new File(dir, base + ".txt");
+                    boolean hasTxt = txtFile.exists();
+                    String txtLower = hasTxt ? readText(txtFile).toLowerCase(Locale.ROOT) : "";
+                    boolean priv = prefs.getBoolean("private:" + base, false);
+                    long dur = durationOf(f);
+                    built.add(new RecordingsAdapter.Item(
+                            f, Formatters.displayName(f.getName()), dur, hasTxt, priv, txtLower));
+                }
+                switch (currentSort) {
+                    case 1:
+                        built.sort((a, b) -> Long.compare(a.file.lastModified(), b.file.lastModified()));
+                        break;
+                    case 2:
+                        built.sort((a, b) -> a.displayName.compareToIgnoreCase(b.displayName));
+                        break;
+                    case 3:
+                        built.sort((a, b) -> Long.compare(b.durationMs, a.durationMs));
+                        break;
+                    default:
+                        built.sort((a, b) -> Long.compare(b.file.lastModified(), a.file.lastModified()));
+                        break;
+                }
+            }
+            ui.post(() -> {
+                if (gen != listGeneration.get() || isFinishing() || isDestroyed()) return;
+                allItems.clear();
+                allItems.addAll(built);
+                searchBar.setVisibility(allItems.isEmpty() ? View.GONE : View.VISIBLE);
+                applyFilter();
+            });
+        });
+    }
+
+    private void applyFilter() {
+        List<RecordingsAdapter.Item> shown;
+        if (searchQuery.isEmpty()) {
+            shown = allItems;
+            txtEmpty.setText(EMPTY_DEFAULT);
+        } else {
+            shown = new ArrayList<>();
+            for (RecordingsAdapter.Item item : allItems) {
+                if (item.displayName.toLowerCase(Locale.ROOT).contains(searchQuery)
+                        || item.file.getName().toLowerCase(Locale.ROOT).contains(searchQuery)
+                        || item.transcriptLower.contains(searchQuery)) {
+                    shown.add(item);
+                }
+            }
+            txtEmpty.setText("No recordings match \"" + edSearch.getText().toString().trim() + "\".");
+        }
+        txtListHeader.setText(allItems.isEmpty()
+                ? "Recordings"
+                : (searchQuery.isEmpty()
+                        ? "Recordings  (" + allItems.size() + ")"
+                        : "Matches  (" + shown.size() + " of " + allItems.size() + ")"));
+        txtSort.setText(SORT_NAMES[sortMode] + "  \u25BE");
+        txtSort.setVisibility(allItems.size() > 1 ? View.VISIBLE : View.GONE);
+        adapter.setItems(shown);
+    }
+
+    private void itemMenu(RecordingsAdapter.Item item) {
+        File f = item.file;
+        NaadDialog d = new NaadDialog(this, NaadDialog.SHEET)
+                .title(item.displayName)
+                .subtitle(Formatters.fmtDuration(item.durationMs) + "  \u00b7  "
+                        + Formatters.fmtSize(f.length()) + "  \u00b7  "
+                        + Formatters.fullDate(f.lastModified())
+                        + (item.isPrivate ? "  \u00b7  Private" : ""));
+        d.item("Share", R.drawable.ic_share, false, () -> shareMenu(f));
+        d.item("Send on WhatsApp as document", R.drawable.ic_chat, false, () -> shareWhatsAppDocument(f));
+        d.divider();
+        if (item.hasTranscript) {
+            d.item("View transcript", R.drawable.ic_doc, false, () -> openTranscript(Transcriber.stem(f.getName())));
+        }
+        if (LocalTranscriber.isModelReady(this)) {
+            d.item(item.hasTranscript ? "Re-transcribe on this phone" : "Transcribe on this phone",
+                    R.drawable.ic_bolt, false, () -> transcribeOnDevice(f));
+        }
+        if (!item.isPrivate) {
+            d.item(item.hasTranscript ? "Re-transcribe with Groq" : "Transcribe with Groq",
+                    R.drawable.ic_bolt, false, () -> transcribeWithGroq(f));
+        }
+        d.item("Rename", R.drawable.ic_edit, false, () -> rename(f));
+        d.item("Save copy to " + Storage.folderLabel(this), R.drawable.ic_folder_small, false, () -> copyToFolder(f));
+        d.divider();
+        d.item("Delete", R.drawable.ic_delete, true, () -> delete(f));
+        d.show();
+    }
+
+    private void togglePlay(File f) {
+        if (svc != null && svc.isRecording()) { toast("Stop recording to play"); return; }
+        playback.toggle(f);
+    }
+
+    // ---------- Sharing ----------
     private void shareText(String text) {
         Intent i = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text);
         startActivity(Intent.createChooser(i, "Share transcript"));
@@ -579,371 +850,28 @@ public class MainActivity extends AppCompatActivity
     private void shareMenu(File f) {
         File txt = transcriptOf(f);
         boolean hasTxt = txt.exists();
-        NaadDialog d = new NaadDialog(this, NaadDialog.SHEET).title("Share").subtitle(displayName(f));
+        NaadDialog d = new NaadDialog(this, NaadDialog.SHEET)
+                .title("Share").subtitle(Formatters.displayName(f.getName()));
         d.item("Audio file", R.drawable.ic_share, false, () -> share(f));
         if (hasTxt) {
-            d.item("Transcript as text", R.drawable.ic_doc, false, () -> shareText(readText(txt)));
+            d.item("Transcript as text", R.drawable.ic_doc, false, () ->
+                    io.execute(() -> {
+                        String text = readText(txt);
+                        ui.post(() -> shareText(text));
+                    }));
             d.item("Transcript file (.txt)", R.drawable.ic_doc, false,
-                    () -> shareFiles(java.util.Collections.singletonList(txt), "text/plain"));
+                    () -> shareFiles(Collections.singletonList(txt), "text/plain"));
             d.item("Audio and transcript", R.drawable.ic_share, false,
                     () -> shareFiles(Arrays.asList(f, txt), "*/*"));
             List<File> parts = partsOf(f);
-            if (parts.size() > 1)
+            if (parts.size() > 1) {
                 d.item("All " + parts.size() + " transcript parts", R.drawable.ic_doc, false,
                         () -> shareFiles(parts, "text/plain"));
+            }
         }
         d.show();
     }
-    private static String readText(File f) {
-        if (!f.exists()) return "";
-        try (java.io.InputStream in = new java.io.FileInputStream(f)) {
-            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
-            byte[] b = new byte[8192];
-            int n;
-            while ((n = in.read(b)) > 0) bo.write(b, 0, n);
-            return bo.toString("UTF-8").trim();
-        } catch (Exception e) {
-            return "";
-        }
-    }
 
-    private File transcriptOf(File f) {
-        return new File(Storage.recDir(this), Transcriber.stem(f.getName()) + ".txt");
-    }
-
-    // ---------- Settings ----------
-    private void settingsDialog() {
-        View v = LayoutInflater.from(this).inflate(R.layout.dialog_settings, null);
-        EditText ed = v.findViewById(R.id.edPrefix);
-        TextView preview = v.findViewById(R.id.txtPreview);
-        settingsFolderName = v.findViewById(R.id.txtFolderName);
-        settingsTxFolderName = v.findViewById(R.id.txtTxFolderName);
-
-        ed.setText(Storage.prefix(this));
-        ed.setSelection(ed.getText().length());
-        Runnable upd = () -> {
-            String p = ed.getText().toString().trim();
-            if (p.isEmpty()) p = "Recording";
-            preview.setText("Example: " + Storage.cleanName(p) + "_"
-                    + new SimpleDateFormat("dd-MM-yyyy_hh-mm-ssa", Locale.ENGLISH).format(new Date())
-                    + (useMp3 ? ".mp3" : ".m4a"));
-        };
-        upd.run();
-        ed.addTextChangedListener(new TextWatcher() {
-            public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
-            public void onTextChanged(CharSequence s, int a, int b, int c) { }
-            public void afterTextChanged(Editable s) { upd.run(); }
-        });
-
-        settingsFolderName.setText(Storage.folderLabel(this));
-        settingsTxFolderName.setText(Storage.txFolderLabel(this));
-        v.findViewById(R.id.btnChangeFolder).setOnClickListener(x -> pickFolder(REQ_FOLDER));
-        v.findViewById(R.id.btnChangeTxFolder).setOnClickListener(x -> pickFolder(REQ_TXFOLDER));
-
-        // transcription
-        final String[] mode = {Storage.txMode(this)};
-        final int[] mins = {Storage.txMinutes(this)};
-        final String[] model = {LocalTranscriber.selected(this)};
-        TextView txOff = v.findViewById(R.id.txOff), txLocal = v.findViewById(R.id.txLocal),
-                txGroq = v.findViewById(R.id.txGroq), txHint = v.findViewById(R.id.txHint),
-                txtModel = v.findViewById(R.id.txtModel), btnModel = v.findViewById(R.id.btnModel),
-                mSmall = v.findViewById(R.id.mSmall), mLarge = v.findViewById(R.id.mLarge);
-        View intervalSection = v.findViewById(R.id.intervalSection);
-        View groqSection = v.findViewById(R.id.groqSection);
-        View localSection = v.findViewById(R.id.localSection);
-        int[] ids = {R.id.tx1, R.id.tx5, R.id.tx10, R.id.tx15, R.id.txFull};
-        int[] vals = {1, 5, 10, 15, -1};
-        EditText edKey = v.findViewById(R.id.edGroqKey);
-        edKey.setText(prefs.getString("groqKey", ""));
-        final boolean[] downloading = {false};
-
-        Runnable modelUpd = () -> {
-            mSmall.setBackgroundResource("small".equals(model[0]) ? R.drawable.bg_chip : R.drawable.bg_chip_off);
-            mLarge.setBackgroundResource("large".equals(model[0]) ? R.drawable.bg_chip : R.drawable.bg_chip_off);
-            if (downloading[0]) return;
-            boolean ready = LocalTranscriber.isReady(this, model[0]);
-            txtModel.setText(ready ? "Downloaded, works offline" : "Not downloaded (" + LocalTranscriber.sizeOf(model[0]) + ")");
-            btnModel.setText(ready ? "Delete" : "Download");
-            btnModel.setTextColor(ContextCompat.getColor(this, ready ? R.color.muted : R.color.saffron));
-        };
-        mSmall.setOnClickListener(x -> { if (!downloading[0]) { model[0] = "small"; modelUpd.run(); } });
-        mLarge.setOnClickListener(x -> { if (!downloading[0]) { model[0] = "large"; modelUpd.run(); } });
-        modelUpd.run();
-        btnModel.setOnClickListener(x -> {
-            if (downloading[0]) return;
-            String id = model[0];
-            if (LocalTranscriber.isReady(this, id)) {
-                new NaadDialog(this, false).title("Delete this model?")
-                        .message("It will need to be downloaded again to use it.")
-                        .button("Keep", NaadDialog.SECONDARY, null)
-                        .button("Delete", NaadDialog.DANGER, () -> {
-                            LocalTranscriber.deleteModel(this, id);
-                            modelUpd.run();
-                            renderTxChip();
-                        }).show();
-                return;
-            }
-            if (!Transcriber.get(this).isOnline()) { toast("Connect to the internet to download"); return; }
-            downloading[0] = true;
-            btnModel.setText("");
-            txtModel.setText("Starting download...");
-            LocalTranscriber.downloadModel(this, id, new LocalTranscriber.Progress() {
-                public void update(String text) { ui.post(() -> txtModel.setText(text)); }
-                public void done(boolean ok, String error) {
-                    ui.post(() -> {
-                        downloading[0] = false;
-                        modelUpd.run();
-                        if (!ok) toast("Download failed: " + error);
-                        renderTxChip();
-                    });
-                }
-            });
-        });
-
-        Runnable txUpd = () -> {
-            txOff.setBackgroundResource("off".equals(mode[0]) ? R.drawable.bg_chip : R.drawable.bg_chip_off);
-            txLocal.setBackgroundResource("local".equals(mode[0]) ? R.drawable.bg_chip : R.drawable.bg_chip_off);
-            txGroq.setBackgroundResource("groq".equals(mode[0]) ? R.drawable.bg_chip : R.drawable.bg_chip_off);
-            intervalSection.setVisibility("off".equals(mode[0]) ? View.GONE : View.VISIBLE);
-            groqSection.setVisibility("groq".equals(mode[0]) ? View.VISIBLE : View.GONE);
-            localSection.setVisibility("groq".equals(mode[0]) ? View.GONE : View.VISIBLE);
-            txHint.setText("off".equals(mode[0])
-                    ? "Recordings are not transcribed. Recordings made with Private on still use the on-device model."
-                    : "local".equals(mode[0])
-                    ? "Runs fully on this phone, also offline. Nothing is uploaded."
-                    : "Most accurate. Audio is sent to Groq. If you were offline, Naad asks before sending.");
-            for (int i = 0; i < ids.length; i++)
-                v.findViewById(ids[i]).setBackgroundResource(
-                        mins[0] == vals[i] ? R.drawable.bg_chip : R.drawable.bg_chip_off);
-        };
-        txOff.setOnClickListener(x -> { mode[0] = "off"; txUpd.run(); });
-        txLocal.setOnClickListener(x -> { mode[0] = "local"; txUpd.run(); });
-        txGroq.setOnClickListener(x -> { mode[0] = "groq"; txUpd.run(); });
-        for (int i = 0; i < ids.length; i++) {
-            final int val = vals[i];
-            v.findViewById(ids[i]).setOnClickListener(x -> { mins[0] = val; txUpd.run(); });
-        }
-        txUpd.run();
-
-        // Settings save when the page closes (back arrow, back gesture or Done)
-        new NaadDialog(this, NaadDialog.FULL)
-                .title("Settings")
-                .view(v, false)
-                .button("Done", NaadDialog.PRIMARY, null)
-                .onDismiss(() -> {
-                    String p = ed.getText().toString().trim();
-                    prefs.edit().putString("prefix", p.isEmpty() ? "Recording" : p)
-                            .putString("txMode", mode[0]).putInt("txMinutes", mins[0])
-                            .putString("voskModel", model[0])
-                            .putString("groqKey", edKey.getText().toString().trim()).apply();
-                    if (!"off".equals(mode[0]) && !useMp3)
-                        toast("Transcription works with MP3. Switch the format to MP3.");
-                    else if ("groq".equals(mode[0]) && edKey.getText().toString().trim().isEmpty())
-                        toast("Add your Groq API key to transcribe");
-                    else if ("local".equals(mode[0]) && !LocalTranscriber.isModelReady(this))
-                        toast("Download an on-device model to transcribe");
-                    txtFolder.setText(Storage.folderLabel(this));
-                    renderTxChip();
-                    settingsFolderName = null;
-                    settingsTxFolderName = null;
-                })
-                .show();
-    }
-
-    private void pickFolder(int req) {
-        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
-                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-        startActivityForResult(i, req);
-    }
-
-    private static void deleteDir(File f) {
-        File[] k = f.listFiles();
-        if (k != null) for (File c : k) deleteDir(c);
-        f.delete();
-    }
-
-    @Override
-    protected void onActivityResult(int rc, int res, Intent data) {
-        super.onActivityResult(rc, res, data);
-        if (rc == REQ_FOLDER && res == RESULT_OK && data != null && data.getData() != null) {
-            Uri tree = data.getData();
-            getContentResolver().takePersistableUriPermission(tree,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-            prefs.edit().putString("folder", tree.toString()).apply();
-            txtFolder.setText(Storage.folderLabel(this));
-            if (settingsFolderName != null) settingsFolderName.setText(Storage.folderLabel(this));
-        }
-        if (rc == REQ_TXFOLDER && res == RESULT_OK && data != null && data.getData() != null) {
-            Uri tree = data.getData();
-            getContentResolver().takePersistableUriPermission(tree,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-            prefs.edit().putString("txFolder", tree.toString()).apply();
-            if (settingsTxFolderName != null) settingsTxFolderName.setText(Storage.txFolderLabel(this));
-        }
-    }
-
-    private void copyToFolder(File f) {
-        if (Storage.folderUri(this) == null) { settingsDialog(); return; }
-        new Thread(() -> {
-            boolean ok = Storage.copyToFolder(this, f);
-            ui.post(() -> toast(ok ? "Saved to " + Storage.folderLabel(this)
-                    : "Could not save. Choose the folder again in Settings."));
-        }).start();
-    }
-
-    // ---------- List ----------
-    private void refreshList() {
-        files.clear();
-        File[] arr = Storage.recDir(this).listFiles((d, n) -> n.endsWith(".m4a") || n.endsWith(".mp3"));
-        if (arr != null) {
-            switch (sortMode) {
-                case 1: Arrays.sort(arr, (a, b) -> Long.compare(a.lastModified(), b.lastModified())); break;
-                case 2: Arrays.sort(arr, (a, b) -> a.getName().compareToIgnoreCase(b.getName())); break;
-                case 3: Arrays.sort(arr, (a, b) -> Long.compare(durationOf(b), durationOf(a))); break;
-                default: Arrays.sort(arr, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
-            }
-            for (File f : arr) {
-                // hide the file that is still being recorded
-                if (svc != null && svc.isRecording() && f.equals(svc.currentFile())) continue;
-                files.add(f);
-            }
-        }
-        txtListHeader.setText(files.isEmpty() ? "Recordings" : "Recordings  (" + files.size() + ")");
-        txtSort.setText(SORT_NAMES[sortMode] + "  \u25BE");
-        txtSort.setVisibility(files.size() > 1 ? View.VISIBLE : View.GONE);
-        adapter.notifyDataSetChanged();
-    }
-
-    private class RecAdapter extends BaseAdapter {
-        @Override public int getCount() { return files.size(); }
-        @Override public Object getItem(int i) { return files.get(i); }
-        @Override public long getItemId(int i) { return i; }
-
-        @Override
-        public View getView(int pos, View v, ViewGroup parent) {
-            if (v == null) v = LayoutInflater.from(MainActivity.this)
-                    .inflate(R.layout.item_recording, parent, false);
-            File f = files.get(pos);
-            v.setTag(f);
-            ((TextView) v.findViewById(R.id.txtName)).setText(displayName(f));
-            ((TextView) v.findViewById(R.id.txtBadge)).setText(f.getName().endsWith(".mp3") ? "MP3" : "M4A");
-            String date = shortDate(f.lastModified());
-            ((TextView) v.findViewById(R.id.txtMeta)).setText(
-                    fmt(durationOf(f)) + "  ·  " + size(f.length()) + "  ·  " + date);
-            TextView txt = v.findViewById(R.id.txtTxt);
-            boolean hasTxt = transcriptOf(f).exists();
-            txt.setVisibility(hasTxt ? View.VISIBLE : View.GONE);
-            txt.setOnClickListener(hasTxt ? x -> viewTranscript(transcriptOf(f)) : null);
-            v.findViewById(R.id.imgLock).setVisibility(isPrivate(f) ? View.VISIBLE : View.GONE);
-
-            boolean isCurrent = f.equals(playingFile) && player != null;
-            boolean playing = isCurrent && player.isPlaying();
-            ImageButton play = v.findViewById(R.id.btnItemPlay);
-            play.setImageResource(playing ? R.drawable.ic_pause_small : R.drawable.ic_play);
-            play.setContentDescription(playing ? "Pause" : "Play");
-            play.setOnClickListener(x -> togglePlay(f));
-            v.findViewById(R.id.btnItemMore).setOnClickListener(x -> itemMenu(x, f));
-            v.findViewById(R.id.row).setOnClickListener(x -> togglePlay(f));
-
-            View playRow = v.findViewById(R.id.playRow);
-            playRow.setVisibility(isCurrent ? View.VISIBLE : View.GONE);
-            SeekBar sb = v.findViewById(R.id.seek);
-            sb.setOnSeekBarChangeListener(null);
-            if (isCurrent) {
-                sb.setMax(Math.max(1, player.getDuration()));
-                sb.setProgress(player.getCurrentPosition());
-                ((TextView) v.findViewById(R.id.txtPos)).setText(fmt(player.getCurrentPosition()));
-                v.findViewById(R.id.btnBack10).setOnClickListener(x -> skip(-10000));
-                v.findViewById(R.id.btnFwd10).setOnClickListener(x -> skip(10000));
-                sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                    public void onProgressChanged(SeekBar s, int p, boolean user) {
-                        if (user && player != null) player.seekTo(p);
-                    }
-                    public void onStartTrackingTouch(SeekBar s) { seeking = true; }
-                    public void onStopTrackingTouch(SeekBar s) { seeking = false; }
-                });
-            }
-            return v;
-        }
-    }
-
-    /** Updates the seek bar of the visible playing card without rebuilding the list. */
-    private void updatePlayback() {
-        if (player == null || playingFile == null || seeking) return;
-        for (int i = 0; i < list.getChildCount(); i++) {
-            View c = list.getChildAt(i);
-            if (playingFile.equals(c.getTag())) {
-                SeekBar sb = c.findViewById(R.id.seek);
-                int pos = player.getCurrentPosition();
-                sb.setProgress(pos);
-                ((TextView) c.findViewById(R.id.txtPos)).setText(fmt(pos));
-            }
-        }
-    }
-
-    private void itemMenu(View anchor, File f) {
-        NaadDialog d = new NaadDialog(this, NaadDialog.SHEET).title(displayName(f))
-                .subtitle(fmt(durationOf(f)) + "  \u00b7  " + size(f.length()) + "  \u00b7  "
-                        + new SimpleDateFormat("d MMM yyyy, h:mm a", Locale.ENGLISH).format(new Date(f.lastModified()))
-                        + (isPrivate(f) ? "  \u00b7  Private" : ""));
-        d.item("Share", R.drawable.ic_share, false, () -> shareMenu(f));
-        d.item("Send on WhatsApp as document", R.drawable.ic_chat, false, () -> shareWhatsAppDocument(f));
-        d.divider();
-        if (transcriptOf(f).exists()) d.item("View transcript", R.drawable.ic_doc, false, () -> viewTranscript(transcriptOf(f)));
-        else {
-            if (LocalTranscriber.isModelReady(this))
-                d.item("Transcribe on this phone", R.drawable.ic_bolt, false, () -> transcribeOnDevice(f));
-            if (!isPrivate(f)) d.item("Transcribe with Groq", R.drawable.ic_bolt, false, () -> transcribeWithGroq(f));
-        }
-        d.item("Rename", R.drawable.ic_edit, false, () -> rename(f));
-        d.item("Save copy to " + Storage.folderLabel(this), R.drawable.ic_folder_small, false, () -> copyToFolder(f));
-        d.divider();
-        d.item("Delete", R.drawable.ic_delete, true, () -> delete(f));
-        d.show();
-    }
-    private String displayNameOf(String base) { return displayName(new File(base + ".mp3")); }
-
-    /** Default names like "Recording_23-11-2026_08-51-21AM" show as "Recording". */
-    private String displayName(File f) {
-        String n = stripExt(f.getName());
-        java.util.regex.Matcher m = java.util.regex.Pattern
-                .compile("^(.*)_\\d{2}-\\d{2}-\\d{4}_\\d{2}-\\d{2}-\\d{2}(AM|PM|am|pm)$").matcher(n);
-        if (m.matches() && !m.group(1).isEmpty()) return m.group(1);
-        m = java.util.regex.Pattern.compile("^(REC|Dhwani)_\\d{8}_\\d{6}$").matcher(n);
-        if (m.matches()) return m.group(1);
-        return n;
-    }
-
-    private void togglePlay(File f) {
-        if (svc != null && svc.isRecording()) { toast("Stop recording to play"); return; }
-        if (f.equals(playingFile) && player != null) {
-            if (player.isPlaying()) player.pause(); else player.start();
-            adapter.notifyDataSetChanged();
-            return;
-        }
-        stopPlaying();
-        try {
-            player = new MediaPlayer();
-            player.setDataSource(f.getAbsolutePath());
-            player.prepare();
-            player.start();
-            playingFile = f;
-            player.setOnCompletionListener(mp -> { stopPlaying(); adapter.notifyDataSetChanged(); });
-        } catch (Exception e) {
-            stopPlaying();
-            toast("Could not play this file");
-        }
-        adapter.notifyDataSetChanged();
-    }
-
-    private void stopPlaying() {
-        if (player != null) { player.release(); player = null; }
-        playingFile = null;
-    }
-
-    // ---------- Share ----------
     private void share(File f) {
         Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".files", f);
         Intent i = new Intent(Intent.ACTION_SEND);
@@ -967,12 +895,22 @@ public class MainActivity extends AppCompatActivity
         toast("WhatsApp is not installed");
     }
 
-    // ---------- Rename / delete ----------
+    private void copyToFolder(File f) {
+        if (Storage.folderUri(this) == null) { settingsSheet.show(); return; }
+        io.execute(() -> {
+            boolean ok = Storage.copyToFolder(this, f);
+            ui.post(() -> toast(ok ? "Saved to " + Storage.folderLabel(this)
+                    : "Could not save. Choose the folder again in Settings."));
+        });
+    }
+
+    // ---------- Rename / Delete ----------
     private void rename(File f) {
         EditText et = new EditText(this);
         et.setInputType(InputType.TYPE_CLASS_TEXT);
         et.setSingleLine(true);
-        et.setText(stripExt(f.getName()));
+        et.setTextColor(ContextCompat.getColor(this, R.color.text));
+        et.setText(Formatters.stripExt(f.getName()));
         et.setSelectAllOnFocus(true);
         new NaadDialog(this, false).title("Rename").view(et, false)
                 .button("Cancel", NaadDialog.SECONDARY, null)
@@ -983,13 +921,15 @@ public class MainActivity extends AppCompatActivity
                     File to = new File(f.getParentFile(), n + ext);
                     if (to.equals(f)) return;
                     if (to.exists()) { toast("A recording with that name exists"); return; }
-                    if (f.equals(playingFile)) stopPlaying();
+                    if (playback.isCurrent(f)) playback.stop();
                     String oldBase = Transcriber.stem(f.getName());
                     if (!f.renameTo(to)) { toast("Could not rename"); return; }
+                    durationCache.remove(f.getAbsolutePath() + ":" + f.length());
                     File[] txts = Storage.recDir(this).listFiles((dd, nn) ->
                             nn.equals(oldBase + ".txt") || (nn.startsWith(oldBase + "_part") && nn.endsWith(".txt")));
                     if (txts != null) for (File t : txts)
                         t.renameTo(new File(t.getParentFile(), n + t.getName().substring(oldBase.length())));
+                    Transcriber.get(this).renamePending(oldBase, n);
                     if (prefs.getBoolean("private:" + oldBase, false))
                         prefs.edit().remove("private:" + oldBase).putBoolean("private:" + n, true).apply();
                     if (f.equals(lastSavedFile)) {
@@ -1004,15 +944,18 @@ public class MainActivity extends AppCompatActivity
 
     private void delete(File f) {
         new NaadDialog(this, false).title("Delete recording?")
-                .message(displayName(f) + " and its transcript will be removed from the app. Copies in your chosen folder stay.")
+                .message(Formatters.displayName(f.getName())
+                        + " and its transcript will be removed from the app. Copies in your chosen folder stay.")
                 .button("Cancel", NaadDialog.SECONDARY, null)
                 .button("Delete", NaadDialog.DANGER, () -> {
-                    if (f.equals(playingFile)) stopPlaying();
+                    if (playback.isCurrent(f)) playback.stop();
+                    durationCache.remove(f.getAbsolutePath() + ":" + f.length());
                     f.delete();
                     String b0 = Transcriber.stem(f.getName());
                     File[] txts = Storage.recDir(this).listFiles((dd, nn) ->
                             nn.equals(b0 + ".txt") || (nn.startsWith(b0 + "_part") && nn.endsWith(".txt")));
                     if (txts != null) for (File t : txts) t.delete();
+                    Transcriber.get(this).deletePending(b0);
                     prefs.edit().remove("private:" + b0).apply();
                     if (f.equals(lastSavedFile)) {
                         savedBar.setVisibility(View.GONE);
@@ -1021,6 +964,24 @@ public class MainActivity extends AppCompatActivity
                     refreshList();
                 })
                 .show();
+    }
+
+    // ---------- Helpers ----------
+    private File transcriptOf(File f) {
+        return new File(Storage.recDir(this), Transcriber.stem(f.getName()) + ".txt");
+    }
+
+    private static String readText(File f) {
+        if (!f.exists()) return "";
+        try (InputStream in = new FileInputStream(f)) {
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            byte[] b = new byte[8192];
+            int n;
+            while ((n = in.read(b)) > 0) bo.write(b, 0, n);
+            return bo.toString(StandardCharsets.UTF_8.name()).trim();
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private long durationOf(File f) {
@@ -1041,53 +1002,12 @@ public class MainActivity extends AppCompatActivity
         return d;
     }
 
-    private static String fmt(long ms) {
-        long s = ms / 1000;
-        return s >= 3600
-                ? String.format(Locale.US, "%d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60)
-                : String.format(Locale.US, "%02d:%02d", s / 60, s % 60);
-    }
-
-    private static String size(long b) {
-        if (b < 1024 * 1024) return (b / 1024) + " KB";
-        return String.format(Locale.US, "%.1f MB", b / (1024f * 1024f));
-    }
-
-    private static String stripExt(String n) {
-        int i = n.lastIndexOf('.');
-        return i > 0 ? n.substring(0, i) : n;
-    }
-
-    /** "9:22 am" today, "Yesterday", or "23 Nov". */
-    private static String shortDate(long t) {
-        java.util.Calendar now = java.util.Calendar.getInstance(), c = java.util.Calendar.getInstance();
-        c.setTimeInMillis(t);
-        boolean sameYear = now.get(java.util.Calendar.YEAR) == c.get(java.util.Calendar.YEAR);
-        int dayDiff = now.get(java.util.Calendar.DAY_OF_YEAR) - c.get(java.util.Calendar.DAY_OF_YEAR);
-        if (sameYear && dayDiff == 0)
-            return new SimpleDateFormat("h:mm a", Locale.ENGLISH).format(new Date(t)).toLowerCase(Locale.ENGLISH);
-        if (sameYear && dayDiff == 1) return "Yesterday";
-        return new SimpleDateFormat(sameYear ? "d MMM" : "d MMM yy", Locale.ENGLISH).format(new Date(t));
-    }
-
-    private void skip(int ms) {
-        if (player == null) return;
-        int p = Math.max(0, Math.min(player.getDuration(), player.getCurrentPosition() + ms));
-        player.seekTo(p);
-        updatePlayback();
-    }
-
     private void buzz(View v) {
         v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
     }
 
-    private long freeBytes() {
-        try { return new StatFs(Storage.recDir(this).getAbsolutePath()).getAvailableBytes(); }
-        catch (Exception e) { return Long.MAX_VALUE; }
-    }
-
     private String freeText() {
-        long free = freeBytes();
+        long free = Storage.freeBytes(this);
         if (free == Long.MAX_VALUE) return "";
         long bytesPerHour = (quality == 1 ? 128 : 64) * 1000L / 8 * 3600;
         long hours = free / bytesPerHour;
@@ -1095,7 +1015,7 @@ public class MainActivity extends AppCompatActivity
                 ? String.format(Locale.US, "%.1f GB free", free / (1024f * 1024f * 1024f))
                 : (free / (1024 * 1024)) + " MB free";
         String time = hours >= 1000 ? "1000+ hours" : hours + (hours == 1 ? " hour" : " hours");
-        return space + "  ·  about " + time + " at " + (quality == 1 ? "High" : "Voice");
+        return space + "  \u00b7  about " + time + " at " + (quality == 1 ? "High" : "Voice");
     }
 
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }

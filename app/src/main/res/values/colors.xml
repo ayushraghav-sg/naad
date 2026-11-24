@@ -1,5 +1,6 @@
 <resources>
     <color name="indigo">#2E2A6B</color>
+    <color name="indigo_accent">#2E2A6B</color>
     <color name="indigo_soft">#E9E7F5</color>
     <color name="saffron">#E8771E</color>
     <color name="saffron_soft">#FCEBDD</color>
