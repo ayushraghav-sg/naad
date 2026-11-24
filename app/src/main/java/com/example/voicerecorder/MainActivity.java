@@ -60,7 +60,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class MainActivity extends AppCompatActivity
         implements RecorderService.Listener, Transcriber.Listener,
-        PlaybackController.Listener, SettingsSheet.Host {
+        GoogleDocsSync.Listener, PlaybackController.Listener, SettingsSheet.Host {
 
     private static final String[] SORT_NAMES = {"Newest", "Oldest", "Name", "Longest"};
     private static final String EMPTY_DEFAULT =
@@ -91,6 +91,7 @@ public class MainActivity extends AppCompatActivity
     private NaadDialog approvalDialog;
 
     private TextView liveTv;
+    private TextView liveDocLink;
     private String liveBase;
     private ScrollView liveScroll;
 
@@ -131,6 +132,24 @@ public class MainActivity extends AppCompatActivity
                 persistTreePermission(tree);
                 prefs.edit().putString("txFolder", tree.toString()).apply();
                 if (settingsSheet != null) settingsSheet.refreshFolderLabels();
+            });
+
+    private final ActivityResultLauncher<String[]> saJsonLauncher =
+            registerForActivityResult(new ActivityResultContracts.OpenDocument(), uri -> {
+                if (uri == null) return;
+                io.execute(() -> {
+                    String json = readUriText(uri);
+                    GoogleAuth.ServiceAccount sa = GoogleAuth.parseServiceAccount(json);
+                    ui.post(() -> {
+                        if (sa == null) {
+                            toast("Not a valid Google Cloud Service Account JSON file");
+                            return;
+                        }
+                        Storage.setVertexServiceAccountJson(this, json);
+                        if (settingsSheet != null) settingsSheet.refreshServiceAccountLabels();
+                        toast("Loaded " + sa.clientEmail);
+                    });
+                });
             });
 
     private final Runnable tick = new Runnable() {
@@ -320,6 +339,7 @@ public class MainActivity extends AppCompatActivity
         refreshList();
         updateNotifBar();
         Transcriber.get(this).setListener(this);
+        GoogleDocsSync.get(this).setListener(this);
         checkPending();
         ensureTicking();
     }
@@ -331,6 +351,7 @@ public class MainActivity extends AppCompatActivity
         tickScheduled = false;
         if (svc != null) svc.setListener(null);
         Transcriber.get(this).setListener(null);
+        GoogleDocsSync.get(this).setListener(null);
         try { unbindService(conn); } catch (Exception ignored) { }
         svc = null;
         // Playback intentionally continues while screen locks or user switches apps
@@ -363,9 +384,24 @@ public class MainActivity extends AppCompatActivity
     @Override public boolean isUsingMp3() { return useMp3; }
     @Override public void onPickAudioFolder() { audioFolderLauncher.launch(null); }
     @Override public void onPickTranscriptFolder() { txFolderLauncher.launch(null); }
+    @Override public void onPickServiceAccountJson() {
+        saJsonLauncher.launch(new String[]{"application/json", "text/plain", "*/*"});
+    }
     @Override public void onSettingsClosed() {
         txtFolder.setText(Storage.folderLabel(this));
         renderTxChip();
+    }
+
+    // ---------- GoogleDocsSync.Listener ----------
+    @Override public void onDocLinked(String base, String docUrl) {
+        if (base.equals(liveBase) && liveDocLink != null) {
+            liveDocLink.setVisibility(View.VISIBLE);
+            liveDocLink.setOnClickListener(v -> openUrl(docUrl));
+        }
+    }
+
+    @Override public void onDocError(String message) {
+        toast(message);
     }
 
     // ---------- PlaybackController.Listener ----------
@@ -542,12 +578,14 @@ public class MainActivity extends AppCompatActivity
 
     private void renderTxChip() {
         String mode = Storage.txMode(this);
-        int m = Storage.txMinutes(this);
-        String every = m < 0 ? "full" : "every " + m + " min";
+        String every = Storage.txIntervalLabel(this);
+        String docsTag = (!privateNext && Storage.isGdocsEnabled(this) && !"off".equals(mode))
+                ? "  \u00b7  Docs" : "";
         String label;
         if (privateNext) label = LocalTranscriber.isModelReady(this) ? "On device  \u00b7  " + every : "Private: no transcript";
-        else if ("groq".equals(mode)) label = "Groq  \u00b7  " + every;
-        else if ("local".equals(mode)) label = "On device  \u00b7  " + every;
+        else if ("vertex".equals(mode)) label = "Vertex AI  \u00b7  " + every + docsTag;
+        else if ("groq".equals(mode)) label = "Groq  \u00b7  " + every + docsTag;
+        else if ("local".equals(mode)) label = "On device  \u00b7  " + every + docsTag;
         else label = "Transcribe: Off";
         chipTx.setText(label);
         chipTx.setBackgroundResource("off".equals(mode) && !privateNext ? R.drawable.bg_chip_off : R.drawable.bg_chip);
@@ -609,7 +647,7 @@ public class MainActivity extends AppCompatActivity
         NaadDialog d = new NaadDialog(this, false)
                 .title("Send for transcription?")
                 .message(parts + " recorded while you were offline. Send "
-                        + (n == 1 ? "it" : "them") + " to Groq now, or transcribe on this phone instead.");
+                        + (n == 1 ? "it" : "them") + " for cloud transcription now, or transcribe on this phone instead.");
         d.button("Later", NaadDialog.SECONDARY, null);
         if (LocalTranscriber.isModelReady(this))
             d.button("On device", NaadDialog.SECONDARY, () -> LocalTranscriber.transcribePending(this));
@@ -637,8 +675,44 @@ public class MainActivity extends AppCompatActivity
         if (key.isEmpty()) { toast("Add your Groq API key in Settings first"); settingsSheet.show(); return; }
         if (!Transcriber.get(this).isOnline()) { toast("No internet. Try again when online."); return; }
         lastSavedFile = f;
-        Transcriber.get(this).queueWholeFile(f);
+        Transcriber.get(this).queueWholeFile(f, "groq");
         toast("Sending to Groq...");
+    }
+
+    private void transcribeWithVertex(File f) {
+        if (!Storage.hasVertexCredentials(this)) {
+            toast("Add your Vertex AI key or Service Account JSON in Settings first");
+            settingsSheet.show();
+            return;
+        }
+        if (!Transcriber.get(this).isOnline()) { toast("No internet. Try again when online."); return; }
+        lastSavedFile = f;
+        Transcriber.get(this).queueWholeFile(f, "vertex");
+        toast("Sending to Vertex AI...");
+    }
+
+    private void syncToGoogleDocs(File f) {
+        if (!Storage.isGdocsEnabled(this)) {
+            toast("Set up Live Google Docs in Settings first");
+            settingsSheet.show();
+            return;
+        }
+        String base = Transcriber.stem(f.getName());
+        File txt = transcriptOf(f);
+        toast("Syncing to Google Docs...");
+        io.execute(() -> {
+            String content = readText(txt);
+            GoogleDocsSync.get(this).syncExisting(base, content, (ok, msg) -> toast(msg));
+        });
+    }
+
+    private void openUrl(String url) {
+        if (url == null || url.isEmpty()) return;
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        } catch (Exception e) {
+            toast("Could not open link");
+        }
     }
 
     private void transcribeOnDevice(File f) {
@@ -677,7 +751,21 @@ public class MainActivity extends AppCompatActivity
         sub.setTextColor(ContextCompat.getColor(this, R.color.muted));
         sub.setTextSize(13);
         sub.setPadding(dp(4), 0, 0, dp(12));
-        d.view(sub, false).view(tv, false);
+        TextView docLink = new TextView(this);
+        docLink.setText("Open live Google Doc  \u2197");
+        docLink.setTextColor(ContextCompat.getColor(this, R.color.saffron));
+        docLink.setTextSize(14);
+        docLink.setTypeface(docLink.getTypeface(), android.graphics.Typeface.BOLD);
+        docLink.setPadding(dp(4), 0, 0, dp(12));
+        String existingDocUrl = Storage.gdocUrlFor(this, base);
+        if (!existingDocUrl.isEmpty()) {
+            docLink.setVisibility(View.VISIBLE);
+            docLink.setOnClickListener(x -> openUrl(existingDocUrl));
+        } else {
+            docLink.setVisibility(View.GONE);
+        }
+
+        d.view(sub, false).view(docLink, false).view(tv, false);
         d.button("Copy", NaadDialog.SECONDARY, true, () -> {
             ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
             if (cm != null) {
@@ -688,7 +776,8 @@ public class MainActivity extends AppCompatActivity
         d.button("Share", NaadDialog.PRIMARY, true, () -> shareText(tv.getText().toString()));
         liveBase = base;
         liveTv = tv;
-        d.onDismiss(() -> { liveTv = null; liveBase = null; liveScroll = null; });
+        liveDocLink = docLink;
+        d.onDismiss(() -> { liveTv = null; liveDocLink = null; liveBase = null; liveScroll = null; });
         d.show();
 
         View p = tv.getParent() instanceof View ? (View) tv.getParent() : null;
@@ -796,14 +885,23 @@ public class MainActivity extends AppCompatActivity
         d.item("Share", R.drawable.ic_share, false, () -> shareMenu(f));
         d.item("Send on WhatsApp as document", R.drawable.ic_chat, false, () -> shareWhatsAppDocument(f));
         d.divider();
+        String base = Transcriber.stem(f.getName());
+        String docUrl = Storage.gdocUrlFor(this, base);
         if (item.hasTranscript) {
-            d.item("View transcript", R.drawable.ic_doc, false, () -> openTranscript(Transcriber.stem(f.getName())));
+            d.item("View transcript", R.drawable.ic_doc, false, () -> openTranscript(base));
+        }
+        if (!docUrl.isEmpty()) {
+            d.item("Open in Google Docs", R.drawable.ic_doc, false, () -> openUrl(docUrl));
+        } else if (item.hasTranscript && !item.isPrivate && Storage.isGdocsEnabled(this)) {
+            d.item("Send transcript to Google Docs", R.drawable.ic_doc, false, () -> syncToGoogleDocs(f));
         }
         if (LocalTranscriber.isModelReady(this)) {
             d.item(item.hasTranscript ? "Re-transcribe on this phone" : "Transcribe on this phone",
                     R.drawable.ic_bolt, false, () -> transcribeOnDevice(f));
         }
         if (!item.isPrivate) {
+            d.item(item.hasTranscript ? "Re-transcribe with Vertex AI" : "Transcribe with Vertex AI",
+                    R.drawable.ic_bolt, false, () -> transcribeWithVertex(f));
             d.item(item.hasTranscript ? "Re-transcribe with Groq" : "Transcribe with Groq",
                     R.drawable.ic_bolt, false, () -> transcribeWithGroq(f));
         }
@@ -930,6 +1028,7 @@ public class MainActivity extends AppCompatActivity
                     if (txts != null) for (File t : txts)
                         t.renameTo(new File(t.getParentFile(), n + t.getName().substring(oldBase.length())));
                     Transcriber.get(this).renamePending(oldBase, n);
+                    Storage.renameGdoc(this, oldBase, n);
                     if (prefs.getBoolean("private:" + oldBase, false))
                         prefs.edit().remove("private:" + oldBase).putBoolean("private:" + n, true).apply();
                     if (f.equals(lastSavedFile)) {
@@ -956,6 +1055,7 @@ public class MainActivity extends AppCompatActivity
                             nn.equals(b0 + ".txt") || (nn.startsWith(b0 + "_part") && nn.endsWith(".txt")));
                     if (txts != null) for (File t : txts) t.delete();
                     Transcriber.get(this).deletePending(b0);
+                    Storage.removeGdoc(this, b0);
                     prefs.edit().remove("private:" + b0).apply();
                     if (f.equals(lastSavedFile)) {
                         savedBar.setVisibility(View.GONE);
@@ -969,6 +1069,19 @@ public class MainActivity extends AppCompatActivity
     // ---------- Helpers ----------
     private File transcriptOf(File f) {
         return new File(Storage.recDir(this), Transcriber.stem(f.getName()) + ".txt");
+    }
+
+    private String readUriText(Uri uri) {
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) return "";
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            byte[] b = new byte[8192];
+            int n;
+            while ((n = in.read(b)) > 0) bo.write(b, 0, n);
+            return bo.toString(StandardCharsets.UTF_8.name()).trim();
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private static String readText(File f) {

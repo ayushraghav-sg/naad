@@ -184,15 +184,23 @@ public final class Transcriber {
     }
 
     /**
-     * Queues an existing recording for Groq transcription.
-     * Files under 24 MB are copied directly; larger files are transcoded & split into 32 kbps MP3
-     * chunks on the worker thread so long recordings can still be transcribed on the free tier.
+     * Queues an existing recording for cloud transcription ("groq" or "vertex").
+     * Smaller files are copied directly; larger files are transcoded & split into 32 kbps MP3 chunks.
      */
     public void queueWholeFile(File rec) {
+        queueWholeFile(rec, "vertex".equals(Storage.txMode(app)) ? "vertex" : "groq");
+    }
+
+    public void queueWholeFile(File rec, String provider) {
         String base = stem(rec.getName());
+        String resolvedProvider = "vertex".equals(provider) ? "vertex" : "groq";
+        long directLimit = "vertex".equals(resolvedProvider)
+                ? VertexTranscriber.DIRECT_LIMIT_BYTES : GROQ_DIRECT_LIMIT;
+        String label = "vertex".equals(resolvedProvider) ? "Vertex AI" : "Groq";
         worker.execute(() -> {
             deletePending(base);
-            if (rec.length() <= GROQ_DIRECT_LIMIT) {
+            prefs().edit().putString("txProvider:" + base, resolvedProvider).apply();
+            if (rec.length() <= directLimit) {
                 String ext = rec.getName().endsWith(".m4a") ? "m4a" : "mp3";
                 File dst = new File(pendingDir(app), base + "__part01_last." + ext);
                 try (InputStream in = new FileInputStream(rec);
@@ -202,13 +210,13 @@ public final class Transcriber {
                     while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
                 } catch (IOException e) {
                     dst.delete();
-                    status("Could not prepare file for Groq.");
+                    status("Could not prepare file for " + label + ".");
                     return;
                 }
             } else {
-                status("Splitting large recording for Groq...");
-                if (!splitLargeFile(rec, base)) {
-                    status("Could not prepare large file for Groq.");
+                status("Splitting large recording for " + label + "...");
+                if (!splitLargeFile(rec, base, "vertex".equals(resolvedProvider) ? 35 : SPLIT_MINUTES)) {
+                    status("Could not prepare large file for " + label + ".");
                     return;
                 }
             }
@@ -219,8 +227,8 @@ public final class Transcriber {
         });
     }
 
-    /** Decodes a >24 MB recording and encodes it into <=60-minute 32 kbps mono MP3 chunks. */
-    private boolean splitLargeFile(File rec, String base) {
+    /** Decodes a large recording and encodes it into 32 kbps mono MP3 chunks. */
+    private boolean splitLargeFile(File rec, String base, int splitMinutes) {
         MediaExtractor ex = null;
         MediaCodec codec = null;
         Lame lame = null;
@@ -247,7 +255,7 @@ public final class Transcriber {
                     ? fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE) : 44100;
             int channels = fmt.containsKey(MediaFormat.KEY_CHANNEL_COUNT)
                     ? fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) : 1;
-            long limitSamples = (long) SPLIT_MINUTES * 60 * rate;
+            long limitSamples = (long) splitMinutes * 60 * rate;
 
             int partIndex = 1;
             long samplesInPart = 0;
@@ -402,9 +410,6 @@ public final class Transcriber {
                     post(() -> { Listener l = listener; if (l != null) l.onNeedsApproval(n); });
                     break;
                 }
-                String key = Storage.groqKey(app);
-                if (key.isEmpty()) { status("Add your Groq API key in Settings to transcribe."); break; }
-
                 File f = p.get(0);
                 Matcher m = NAME.matcher(f.getName());
                 if (!m.matches()) { f.delete(); continue; }
@@ -412,10 +417,28 @@ public final class Transcriber {
                 int part = Integer.parseInt(m.group(2));
                 boolean last = m.group(3) != null;
 
-                status("Transcribing part " + part + "...");
+                String provider = prefs().getString("txProvider:" + base,
+                        "vertex".equals(Storage.txMode(app)) ? "vertex" : "groq");
+                boolean useVertex = "vertex".equals(provider);
+
+                String groqKey = null;
+                if (useVertex) {
+                    if (!Storage.hasVertexCredentials(app)) {
+                        status("Configure Vertex AI credentials in Settings to transcribe.");
+                        break;
+                    }
+                } else {
+                    groqKey = Storage.groqKey(app);
+                    if (groqKey.isEmpty()) {
+                        status("Add your Groq API key in Settings to transcribe.");
+                        break;
+                    }
+                }
+
+                status("Transcribing part " + part + (useVertex ? " with Vertex AI..." : "..."));
                 String text;
                 try {
-                    text = send(f, key);
+                    text = useVertex ? VertexTranscriber.transcribe(app, f) : send(f, groqKey);
                 } catch (ApiException e) {
                     status(e.getMessage());
                     break; // keep the chunk; user can retry later
@@ -428,7 +451,11 @@ public final class Transcriber {
                 }
                 String shown = text == null ? "" : text.trim();
                 writeText(base, part, last, shown);
+                if (!shown.isEmpty()) {
+                    GoogleDocsSync.get(app).appendChunk(base, shown);
+                }
                 f.delete();
+                if (last) prefs().edit().remove("txProvider:" + base).apply();
                 post(() -> { Listener l = listener; if (l != null) l.onTranscript(base, shown); });
             }
         } finally {

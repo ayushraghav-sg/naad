@@ -48,14 +48,14 @@ public class AudioRecorder {
     private ChunkListener chunkListener;
     private Context appContext;
 
-    /** minutes: 0 = no chunks, -1 = one part for the whole recording, otherwise part length. */
-    public void setChunks(Context c, File dir, String base, int minutes, ChunkListener l) {
-        if (minutes == 0) return;
+    /** intervalSeconds: 0 = no chunks, -1 = full recording (capped at 90 min), otherwise chunk length in seconds. */
+    public void setChunks(Context c, File dir, String base, int intervalSeconds, ChunkListener l) {
+        if (intervalSeconds == 0) return;
         appContext = c.getApplicationContext();
         chunkDir = dir;
         chunkBase = base;
-        int m = minutes < 0 ? FULL_CAP_MINUTES : minutes;
-        chunkLimitSamples = (long) m * 60 * RATE;
+        long sec = intervalSeconds < 0 ? (long) FULL_CAP_MINUTES * 60L : intervalSeconds;
+        chunkLimitSamples = sec * RATE;
         chunkListener = l;
     }
 

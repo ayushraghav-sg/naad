@@ -338,11 +338,11 @@ public final class LocalTranscriber {
         private int partIndex = 1;
         private long partCount = 0;
 
-        public Session(Context c, String base, int inputRate, int minutes) {
+        public Session(Context c, String base, int inputRate, int intervalSeconds) {
             app = c.getApplicationContext();
             this.base = base;
-            splitParts = minutes > 0;
-            partSamples = minutes > 0 ? (long) minutes * 60 * (long) VOSK_RATE : Long.MAX_VALUE;
+            splitParts = intervalSeconds > 0;
+            partSamples = intervalSeconds > 0 ? (long) intervalSeconds * (long) VOSK_RATE : Long.MAX_VALUE;
             resampler = new Resampler(inputRate);
             new File(Storage.recDir(app), base + ".txt").delete();
             thread = new Thread(this::run, "vosk-live");
@@ -417,6 +417,7 @@ public final class LocalTranscriber {
             if (part.length() > 0) part.append(' ');
             part.append(text);
             Transcriber.get(app).publish(base, all.toString());
+            GoogleDocsSync.get(app).appendChunk(base, text);
         }
 
         private void writePart(boolean last) {

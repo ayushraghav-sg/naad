@@ -39,31 +39,43 @@
     <!-- Transcription -->
     <LinearLayout style="@style/SetCard">
         <TextView style="@style/SetHeading" android:text="Transcription"/>
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:orientation="horizontal">
-            <TextView android:id="@+id/txOff" style="@style/Chip" android:text="Off"/>
-            <TextView android:id="@+id/txLocal" style="@style/Chip" android:text="On device"
-                android:layout_marginStart="8dp"/>
-            <TextView android:id="@+id/txGroq" style="@style/Chip" android:text="Groq"
-                android:layout_marginStart="8dp"/>
-        </LinearLayout>
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:scrollbars="none">
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:orientation="horizontal">
+                <TextView android:id="@+id/txOff" style="@style/Chip" android:text="Off"/>
+                <TextView android:id="@+id/txLocal" style="@style/Chip" android:text="On device"
+                    android:layout_marginStart="8dp"/>
+                <TextView android:id="@+id/txGroq" style="@style/Chip" android:text="Groq"
+                    android:layout_marginStart="8dp"/>
+                <TextView android:id="@+id/txVertex" style="@style/Chip" android:text="Vertex AI"
+                    android:layout_marginStart="8dp"/>
+            </LinearLayout>
+        </HorizontalScrollView>
         <TextView android:id="@+id/txHint" style="@style/SetLabel" android:layout_width="match_parent"
             android:layout_marginTop="8dp" android:textSize="13sp"/>
 
         <LinearLayout android:id="@+id/intervalSection" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:orientation="vertical">
             <TextView style="@style/SetLabel" android:layout_marginTop="16dp"
-                android:text="Save transcript every"/>
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:layout_marginTop="6dp" android:orientation="horizontal">
-                <TextView android:id="@+id/tx1" style="@style/Chip" android:text="1 min" android:paddingStart="10dp" android:paddingEnd="10dp"/>
-                <TextView android:id="@+id/tx5" style="@style/Chip" android:text="5" android:layout_marginStart="6dp"/>
-                <TextView android:id="@+id/tx10" style="@style/Chip" android:text="10" android:layout_marginStart="6dp"/>
-                <TextView android:id="@+id/tx15" style="@style/Chip" android:text="15" android:layout_marginStart="6dp"/>
-                <TextView android:id="@+id/txFull" style="@style/Chip" android:text="Full" android:layout_marginStart="6dp"/>
-            </LinearLayout>
+                android:text="Save / sync transcript every"/>
+            <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:scrollbars="none">
+                <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+                    <TextView android:id="@+id/tx30s" style="@style/Chip" android:text="30s"
+                        android:paddingStart="10dp" android:paddingEnd="10dp"/>
+                    <TextView android:id="@+id/tx1" style="@style/Chip" android:text="1 min"
+                        android:layout_marginStart="6dp" android:paddingStart="10dp" android:paddingEnd="10dp"/>
+                    <TextView android:id="@+id/tx5" style="@style/Chip" android:text="5" android:layout_marginStart="6dp"/>
+                    <TextView android:id="@+id/tx10" style="@style/Chip" android:text="10" android:layout_marginStart="6dp"/>
+                    <TextView android:id="@+id/tx15" style="@style/Chip" android:text="15" android:layout_marginStart="6dp"/>
+                    <TextView android:id="@+id/txFull" style="@style/Chip" android:text="Full" android:layout_marginStart="6dp"/>
+                </LinearLayout>
+            </HorizontalScrollView>
         </LinearLayout>
 
+        <!-- On-device Vosk -->
         <LinearLayout android:id="@+id/localSection" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:orientation="vertical">
             <TextView style="@style/SetLabel" android:layout_marginTop="16dp"
@@ -85,6 +97,7 @@
                 android:text="Better is noticeably more accurate but uses more storage and battery."/>
         </LinearLayout>
 
+        <!-- Groq -->
         <LinearLayout android:id="@+id/groqSection" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:orientation="vertical">
             <TextView style="@style/SetLabel" android:layout_marginTop="16dp" android:text="Groq model"/>
@@ -120,5 +133,153 @@
                 android:layout_width="match_parent"
                 android:text="Stored encrypted on this phone. Get a free key at console.groq.com."/>
         </LinearLayout>
+
+        <!-- Google Vertex AI -->
+        <LinearLayout android:id="@+id/vertexSection" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+            <TextView style="@style/SetLabel" android:layout_marginTop="16dp" android:text="Vertex AI model"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:orientation="horizontal">
+                <TextView android:id="@+id/vFlash" style="@style/Chip" android:text="Gemini 2.5 Flash"/>
+                <TextView android:id="@+id/vPro" style="@style/Chip" android:text="Gemini 2.5 Pro"
+                    android:layout_marginStart="8dp"/>
+            </LinearLayout>
+
+            <TextView style="@style/SetLabel" android:layout_marginTop="14dp" android:text="Language"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:orientation="horizontal">
+                <TextView android:id="@+id/vLangAuto" style="@style/Chip" android:text="Auto"/>
+                <TextView android:id="@+id/vLangEn" style="@style/Chip" android:text="English"
+                    android:layout_marginStart="8dp"/>
+                <TextView android:id="@+id/vLangHi" style="@style/Chip" android:text="Hindi"
+                    android:layout_marginStart="8dp"/>
+            </LinearLayout>
+
+            <TextView style="@style/SetLabel" android:layout_marginTop="14dp" android:text="Authentication"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:orientation="horizontal">
+                <TextView android:id="@+id/vAuthKey" style="@style/Chip" android:text="API Key"/>
+                <TextView android:id="@+id/vAuthSa" style="@style/Chip" android:text="Service Account JSON"
+                    android:layout_marginStart="8dp"/>
+            </LinearLayout>
+
+            <!-- Express Mode API key -->
+            <LinearLayout android:id="@+id/vKeyPanel" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:orientation="vertical">
+                <TextView style="@style/SetLabel" android:layout_marginTop="14dp" android:text="Vertex AI API key"/>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:gravity="center_vertical" android:orientation="horizontal">
+                    <EditText android:id="@+id/edVertexKey" android:layout_width="0dp" android:layout_weight="1"
+                        android:layout_height="wrap_content" android:singleLine="true"
+                        android:textColor="@color/text" android:textColorHint="@color/muted"
+                        android:inputType="textPassword" android:hint="AQ... or AIza..."/>
+                    <TextView android:id="@+id/btnToggleVertexKey" style="@style/SetAction"
+                        android:text="Show" android:textColor="@color/muted"/>
+                    <TextView android:id="@+id/btnTestVertex" style="@style/SetAction" android:text="Test"/>
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Service Account JSON -->
+            <LinearLayout android:id="@+id/vSaPanel" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+                <TextView style="@style/SetLabel" android:layout_marginTop="14dp" android:text="Region"/>
+                <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp" android:scrollbars="none">
+                    <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+                        <TextView android:id="@+id/vLocGlobal" style="@style/Chip" android:text="global"/>
+                        <TextView android:id="@+id/vLocUs" style="@style/Chip" android:text="us-central1"
+                            android:layout_marginStart="8dp"/>
+                        <TextView android:id="@+id/vLocAsia" style="@style/Chip" android:text="asia-south1"
+                            android:layout_marginStart="8dp"/>
+                    </LinearLayout>
+                </HorizontalScrollView>
+
+                <TextView style="@style/SetLabel" android:layout_marginTop="14dp"
+                    android:text="Service Account JSON (also powers Docs API)"/>
+                <TextView android:id="@+id/txtSaStatus" style="@style/SetValue"
+                    android:layout_width="match_parent" android:layout_marginTop="4dp"
+                    android:textSize="13sp" android:text="No Service Account JSON loaded"/>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:gravity="center_vertical" android:orientation="horizontal">
+                    <TextView android:id="@+id/btnImportSa" style="@style/SetAction"
+                        android:paddingStart="0dp" android:paddingEnd="14dp" android:text="Import .json"/>
+                    <TextView android:id="@+id/btnPasteSa" style="@style/SetAction"
+                        android:paddingStart="8dp" android:paddingEnd="14dp"
+                        android:textColor="@color/muted" android:text="Paste"/>
+                    <TextView android:id="@+id/btnClearSa" style="@style/SetAction"
+                        android:paddingStart="8dp" android:paddingEnd="14dp"
+                        android:textColor="@color/muted" android:text="Clear" android:visibility="gone"/>
+                    <View android:layout_width="0dp" android:layout_weight="1" android:layout_height="1dp"/>
+                    <TextView android:id="@+id/btnTestVertexSa" style="@style/SetAction" android:text="Test"/>
+                </LinearLayout>
+            </LinearLayout>
+
+            <TextView android:id="@+id/txtVertexStatus" style="@style/SetLabel"
+                android:layout_width="match_parent" android:layout_marginTop="4dp"
+                android:text="Stored encrypted on this phone via Android KeyStore."/>
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Live Google Docs Sync -->
+    <LinearLayout style="@style/SetCard">
+        <TextView style="@style/SetHeading" android:text="Live Google Docs"/>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <TextView android:id="@+id/gdOff" style="@style/Chip" android:text="Off"/>
+            <TextView android:id="@+id/gdScript" style="@style/Chip" android:text="Apps Script"
+                android:layout_marginStart="8dp"/>
+            <TextView android:id="@+id/gdApi" style="@style/Chip" android:text="Docs API"
+                android:layout_marginStart="8dp"/>
+        </LinearLayout>
+        <TextView android:id="@+id/gdHint" style="@style/SetLabel" android:layout_width="match_parent"
+            android:layout_marginTop="8dp" android:textSize="13sp"/>
+
+        <!-- Apps Script Web App -->
+        <LinearLayout android:id="@+id/gdScriptPanel" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+            <TextView style="@style/SetLabel" android:layout_marginTop="14dp"
+                android:text="Apps Script Web App URL"/>
+            <EditText android:id="@+id/edGdocsScriptUrl" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:singleLine="true"
+                android:textColor="@color/text" android:textColorHint="@color/muted"
+                android:inputType="textUri" android:hint="https://script.google.com/macros/s/.../exec"/>
+            <TextView style="@style/SetLabel" android:layout_marginTop="10dp"
+                android:text="Optional secret passphrase"/>
+            <EditText android:id="@+id/edGdocsSecret" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:singleLine="true"
+                android:textColor="@color/text" android:textColorHint="@color/muted"
+                android:inputType="textPassword" android:hint="Leave blank if unused"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:gravity="center_vertical" android:orientation="horizontal">
+                <TextView android:id="@+id/btnCopyScript" style="@style/SetAction"
+                    android:paddingStart="0dp" android:paddingEnd="14dp" android:text="Copy Apps Script"/>
+                <View android:layout_width="0dp" android:layout_weight="1" android:layout_height="1dp"/>
+                <TextView android:id="@+id/btnTestGdocsScript" style="@style/SetAction" android:text="Test"/>
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Direct Google Docs REST API via Service Account -->
+        <LinearLayout android:id="@+id/gdApiPanel" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+            <TextView style="@style/SetLabel" android:layout_marginTop="14dp"
+                android:text="Target Google Doc URL or ID"/>
+            <EditText android:id="@+id/edGdocsDocUrl" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:singleLine="true"
+                android:textColor="@color/text" android:textColorHint="@color/muted"
+                android:inputType="textUri" android:hint="https://docs.google.com/document/d/..."/>
+            <TextView android:id="@+id/txtGdocsSaNote" style="@style/SetLabel"
+                android:layout_width="match_parent" android:layout_marginTop="6dp"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:gravity="center_vertical" android:orientation="horizontal">
+                <TextView android:id="@+id/btnGdocsImportSa" style="@style/SetAction"
+                    android:paddingStart="0dp" android:paddingEnd="14dp" android:text="Import SA .json"/>
+                <View android:layout_width="0dp" android:layout_weight="1" android:layout_height="1dp"/>
+                <TextView android:id="@+id/btnTestGdocsApi" style="@style/SetAction" android:text="Test"/>
+            </LinearLayout>
+        </LinearLayout>
+
+        <TextView android:id="@+id/txtGdocsStatus" style="@style/SetLabel"
+            android:layout_width="match_parent" android:layout_marginTop="4dp"/>
     </LinearLayout>
 </LinearLayout>

@@ -155,15 +155,16 @@ public class RecorderService extends Service {
             if ("local".equals(mode)) {
                 if (LocalTranscriber.isModelReady(this)) {
                     localSession = new LocalTranscriber.Session(this, Transcriber.stem(file.getName()),
-                            AudioRecorder.rate(), Storage.txMinutes(this));
+                            AudioRecorder.rate(), Storage.txIntervalSeconds(this));
                     final LocalTranscriber.Session ls = localSession;
                     r.setSink(ls::feed);
                 } else {
                     main.post(() -> notifyError("Download the on-device model in Settings to transcribe privately."));
                 }
-            } else if ("groq".equals(mode)) {
+            } else if ("groq".equals(mode) || "vertex".equals(mode)) {
                 String base = Transcriber.stem(file.getName());
-                r.setChunks(this, Transcriber.pendingDir(this), base, Storage.txMinutes(this),
+                Storage.prefs(this).edit().putString("txProvider:" + base, mode).apply();
+                r.setChunks(this, Transcriber.pendingDir(this), base, Storage.txIntervalSeconds(this),
                         chunk -> Transcriber.get(this).chunkReady());
             }
             r.setErrorListener(err -> main.post(() -> {
