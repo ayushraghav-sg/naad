@@ -27,10 +27,19 @@ The Groq API key is encrypted with the Android KeyStore on the phone and exclude
 ## Live streaming (RTMP)
 - Stream the recording's audio live to any RTMP or RTMPS server while it records.
 - In Settings > Live stream, enter the server URL (for example `rtmp://server/live`) and the stream key. The key can also be pasted at the end of the URL.
-- Turn on **Live** in the recorder card before recording. The status line shows LIVE, CONNECTING or RECONNECTING.
+- Turn on **Live** in the recorder card before recording. The status line shows LIVE, CATCHING UP, OFFLINE (with seconds buffered) or CONNECTING.
 - Audio only (AAC, 64 or 128 kbps, mono 44.1 kHz). Platforms that require video, such as YouTube Live, will not accept an audio-only stream.
-- If the connection drops, recording continues and the stream reconnects automatically. Pauses are sent as silence so the stream stays up.
-- The stream key is stored encrypted on the phone. Private recordings are never streamed.
+- The key is stored encrypted on the phone. Private recordings are never streamed.
+
+### Continuous stream through internet drops
+The stream is built for servers that transcribe or save it, so no audio is skipped:
+- Encoding runs independently of the network. If the internet drops, audio keeps being buffered on the phone (up to 30 minutes) and recording continues.
+- On reconnect, buffered audio is sent first, faster than real time, until the stream has caught up. Timestamps run from the start of the recording and never reset, so the server receives one continuous timeline.
+- Naad asks the server to confirm receipt every 32 KB. Anything sent but not confirmed when the connection dropped is sent again, so audio "in the air" is not lost.
+- A frozen connection (no error, but nothing arriving) is detected within about 10 seconds and reconnected.
+- With servers that never send receipts, the last 20 seconds are resent after a reconnect, so a few seconds may arrive twice but nothing is missing.
+- When recording stops, Naad keeps delivering any buffered audio for up to a minute before closing the stream.
+- Pauses are sent as silence so the stream stays up.
 
 ## Build
 Built with Code on the Go on Android (AGP 8.7.3, Gradle 8.10.2, compileSdk/targetSdk 35). Open the project folder and build.

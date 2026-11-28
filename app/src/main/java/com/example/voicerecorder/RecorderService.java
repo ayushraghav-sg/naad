@@ -268,8 +268,8 @@ public class RecorderService extends Service {
         }
         final RtmpStreamer stS = streamer;
         streamer = null;
-        if (stS != null) new Thread(stS::stop, "rtmp-stop").start();
         streamState = null;
+        if (!ok && stS != null) new Thread(stS::stop, "rtmp-stop").start();
         if (!ok) {
             if (localSession != null) { localSession.finish(); localSession = null; }
             if (f != null) {
@@ -289,6 +289,7 @@ public class RecorderService extends Service {
         new Thread(() -> {
             boolean copied = Storage.copyToFolder(this, saved);
             if (ls != null) ls.finish();
+            if (stS != null) stS.stop(); // delivers any audio still buffered, up to a minute
             main.post(() -> {
                 if (listener != null) listener.onSaved(saved, copied);
                 // Guard against killing a newer recording started while cleanup ran
@@ -309,8 +310,10 @@ public class RecorderService extends Service {
         streamState = st;
         streamDetail = detail;
         if (RtmpStreamer.FAILED.equals(st)) notifyError("Live stream stopped: " + detail + ". Recording continues.");
-        else if (RtmpStreamer.RETRYING.equals(st) && RtmpStreamer.LIVE.equals(prev))
-            notifyError("Live stream lost, reconnecting. Recording continues.");
+        else if (RtmpStreamer.RETRYING.equals(st) && (RtmpStreamer.LIVE.equals(prev) || RtmpStreamer.CATCHING_UP.equals(prev)))
+            notifyError("Internet lost. Audio is buffered and will be sent when it reconnects.");
+        else if (RtmpStreamer.LIVE.equals(st) && RtmpStreamer.CATCHING_UP.equals(prev))
+            notifyError("Stream caught up. Nothing was lost.");
         updateNotification();
         notifyState();
     }
@@ -431,6 +434,8 @@ public class RecorderService extends Service {
                 .setSmallIcon(R.drawable.ic_notif)
                 .setContentTitle(title)
                 .setContentText((RtmpStreamer.LIVE.equals(streamState) ? "LIVE  \u00b7  "
+                        : RtmpStreamer.CATCHING_UP.equals(streamState) ? "LIVE, catching up  \u00b7  "
+                        : RtmpStreamer.RETRYING.equals(streamState) ? "Offline, buffering stream  \u00b7  "
                         : streamState != null && !RtmpStreamer.STOPPED.equals(streamState) ? "Stream connecting  \u00b7  " : "")
                         + (file != null ? file.getName() : getString(R.string.app_name)))
                 .setColor(0xFFE8771E)

@@ -17,6 +17,7 @@ import java.net.Socket;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -30,38 +31,73 @@ import java.util.concurrent.TimeUnit;
 import javax.net.ssl.SSLSocketFactory;
 
 /**
- * Streams the recorder's audio live to an RTMP / RTMPS server as AAC.
- * Self-contained: AAC from Android's encoder, a minimal RTMP publisher written here.
- * If the connection drops it keeps retrying while recording continues.
+ * Streams the recorder's audio live to an RTMP / RTMPS server as AAC, as one continuous stream.
+ *
+ * Encoding runs independently of the network. Encoded frames wait in a backlog until the server
+ * confirms it received them, so when the internet drops nothing is lost: frames keep collecting
+ * (up to {@link #MAX_BACKLOG_MS}) and are sent on reconnect, faster than real time, until the
+ * stream has caught up. Timestamps run from the start of the recording and never reset.
  */
 public class RtmpStreamer {
 
     public interface StateListener { void onStreamState(String state, String detail); }
 
-    public static final String CONNECTING = "connecting", LIVE = "live", RETRYING = "retrying",
-            FAILED = "failed", STOPPED = "stopped";
+    public static final String CONNECTING = "connecting", LIVE = "live", CATCHING_UP = "catching_up",
+            RETRYING = "retrying", FAILED = "failed", STOPPED = "stopped";
 
     private static final int RATE = 44100;
     private static final int OUT_CHUNK = 4096;
+    /** How much audio is held while offline before the oldest is dropped. */
+    static final long MAX_BACKLOG_MS = 30 * 60 * 1000L;
+    /** Ask the server to confirm receipt every this many bytes. */
+    private static final int ACK_WINDOW = 32 * 1024;
+    /** A write blocked this long means the connection is dead (e.g. network vanished). */
+    private static final long STALL_MS = 8000;
+    /** When finishing, how long to keep trying to deliver what is left. */
+    private static final long FINAL_FLUSH_MS = 60000;
 
     private final String tcUrl, host, app, streamName;
     private final int port, kbps;
     private final boolean tls;
     private final StateListener listener;
-    private final BlockingQueue<short[]> queue = new ArrayBlockingQueue<>(200);
-    private volatile boolean running = true;
-    private Thread worker;
+    private final BlockingQueue<short[]> pcmQueue = new ArrayBlockingQueue<>(400);
+    private volatile boolean running = true;    // recording still feeding audio
+    private volatile boolean finishing = false; // stop() called: deliver backlog, then end
+    private Thread encoderThread, netThread;
 
     private volatile String state = STOPPED;
+    private volatile String lastReported = "";
 
-    // connection state
-    private Socket socket;
+    // ----- encoded audio waiting for confirmation -----
+    private static final class Frame {
+        final int ts; final byte[] tag; long endOffset; // byte offset in this connection after sending
+        Frame(int ts, byte[] tag) { this.ts = ts; this.tag = tag; }
+    }
+    private final Object lock = new Object();
+    private final ArrayDeque<Frame> pending = new ArrayDeque<>(); // not yet sent on this connection
+    private final ArrayDeque<Frame> inflight = new ArrayDeque<>(); // sent, not yet confirmed
+    private volatile byte[] aacHeader;   // AAC sequence header tag
+    private volatile boolean encoderDone;
+    private volatile boolean serverAcks; // server sends receipts; if not, we trust TCP
+    private long droppedMs;
+
+    // ----- connection -----
+    private volatile Socket socket;
     private OutputStream out;
     private final Object writeLock = new Object();
     private volatile int streamId = -1;
     private volatile boolean published;
     private volatile String error;
     private long bytesRead, lastAck, windowSize = 2500000;
+    private long bytesSent;               // since the end of the handshake
+    private volatile long ackedBytes;     // as reported by the server
+    private volatile long writeStartedAt; // 0 when not inside a write
+    private volatile long lastAckAt;      // when the server last confirmed receipt
+    /** Without receipts, keep this much sent audio in case the network froze and it never arrived. */
+    private static final int NO_RECEIPT_KEEP_MS = 20000;
+    /** With receipts: this much unconfirmed data and no receipt for RECEIPT_TIMEOUT_MS means the link is dead. */
+    private static final int RECEIPT_GAP_BYTES = 4 * ACK_WINDOW;
+    private static final long RECEIPT_TIMEOUT_MS = 10000;
 
     public RtmpStreamer(String url, String key, int kbps, StateListener l) throws IllegalArgumentException {
         this.kbps = kbps;
@@ -93,9 +129,23 @@ public class RtmpStreamer {
 
     public String state() { return state; }
 
+    /** Seconds of audio waiting to be sent (not counting audio sent and awaiting the server's receipt). */
+    public int backlogSeconds() {
+        synchronized (lock) {
+            Frame first = pending.peekFirst(), last = pending.peekLast();
+            if (first == null || last == null) return 0;
+            return Math.max(0, (last.ts - first.ts) / 1000);
+        }
+    }
+
+    /** True once the server has confirmed receipt at least once on the current connection. */
+    public boolean serverConfirms() { return serverAcks; }
+
     public void start() {
-        worker = new Thread(this::loop, "rtmp-stream");
-        worker.start();
+        encoderThread = new Thread(this::encodeLoop, "rtmp-encode");
+        netThread = new Thread(this::netLoop, "rtmp-stream");
+        encoderThread.start();
+        netThread.start();
     }
 
     /** Called from the recording thread with mono 44.1 kHz PCM. */
@@ -103,76 +153,228 @@ public class RtmpStreamer {
         if (!running) return;
         short[] c = new short[n];
         System.arraycopy(pcm, 0, c, 0, n);
-        if (!queue.offer(c)) { queue.poll(); queue.offer(c); } // drop oldest if the network is slow
+        if (!pcmQueue.offer(c)) { pcmQueue.poll(); pcmQueue.offer(c); } // only if the phone itself is overloaded
     }
 
+    /** Ends the stream: encodes what is left, tries to deliver the backlog, then disconnects. Blocks. */
     public void stop() {
         running = false;
-        queue.offer(new short[0]);
+        finishing = true;
+        pcmQueue.offer(new short[0]);
+        try { if (encoderThread != null) encoderThread.join(5000); } catch (InterruptedException ignored) { }
+        try { if (netThread != null) netThread.join(FINAL_FLUSH_MS + 5000); } catch (InterruptedException ignored) { }
         closeSocket();
-        if (worker != null) try { worker.join(3000); } catch (InterruptedException ignored) { }
         setState(STOPPED, null);
     }
 
     private void setState(String s, String detail) {
         state = s;
+        String key = s + "|" + detail;
+        if (key.equals(lastReported)) return;
+        lastReported = key;
         if (listener != null) listener.onStreamState(s, detail);
     }
 
-    // ---------- main loop with reconnects ----------
-    private void loop() {
+    // ---------- encoding (independent of the network) ----------
+    private void encodeLoop() {
+        MediaCodec enc = null;
+        try {
+            MediaFormat f = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, RATE, 1);
+            f.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
+            f.setInteger(MediaFormat.KEY_BIT_RATE, kbps * 1000);
+            f.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384);
+            enc = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC);
+            enc.configure(f, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            enc.start();
+            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+            long samples = 0;
+            boolean end = false;
+            while (!end) {
+                short[] pcm = pcmQueue.poll(200, TimeUnit.MILLISECONDS);
+                if (pcm != null && pcm.length == 0) end = true;
+                else if (pcm == null) {
+                    if (!running) end = true;
+                    else pcm = new short[RATE / 5]; // recording paused: 200 ms of silence keeps the stream continuous
+                }
+                if (pcm != null && pcm.length > 0) {
+                    int off = 0;
+                    while (off < pcm.length) {
+                        int ii = enc.dequeueInputBuffer(10000);
+                        if (ii < 0) { drainEncoder(enc, info); continue; }
+                        ByteBuffer b = enc.getInputBuffer(ii);
+                        b.clear();
+                        int count = Math.min(pcm.length - off, b.remaining() / 2);
+                        for (int i = 0; i < count; i++) {
+                            short v = pcm[off + i];
+                            b.put((byte) v);
+                            b.put((byte) (v >> 8));
+                        }
+                        enc.queueInputBuffer(ii, 0, count * 2, samples * 1000000L / RATE, 0);
+                        samples += count;
+                        off += count;
+                    }
+                }
+                drainEncoder(enc, info);
+            }
+        } catch (Exception e) {
+            error = "Audio encoder failed: " + e.getMessage();
+        } finally {
+            if (enc != null) {
+                try { enc.stop(); } catch (Exception ignored) { }
+                try { enc.release(); } catch (Exception ignored) { }
+            }
+            encoderDone = true;
+        }
+    }
+
+    private void drainEncoder(MediaCodec enc, MediaCodec.BufferInfo info) {
+        int oi;
+        while ((oi = enc.dequeueOutputBuffer(info, 0)) != MediaCodec.INFO_TRY_AGAIN_LATER) {
+            if (oi == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                ByteBuffer csd = enc.getOutputFormat().getByteBuffer("csd-0");
+                if (csd != null && aacHeader == null) aacHeader = tag(0, csd);
+                continue;
+            }
+            if (oi < 0) continue;
+            ByteBuffer ob = enc.getOutputBuffer(oi);
+            if (ob != null && info.size > 0) {
+                ob.position(info.offset);
+                ob.limit(info.offset + info.size);
+                if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                    if (aacHeader == null) aacHeader = tag(0, ob);
+                } else {
+                    addFrame(new Frame((int) (info.presentationTimeUs / 1000), tag(1, ob)));
+                }
+            }
+            enc.releaseOutputBuffer(oi, false);
+        }
+    }
+
+    private static byte[] tag(int packetType, ByteBuffer data) {
+        byte[] t = new byte[2 + data.remaining()];
+        t[0] = (byte) 0xAF; // AAC, 44 kHz, 16-bit (stereo flag is always set for AAC)
+        t[1] = (byte) packetType; // 0 = sequence header, 1 = raw frame
+        data.get(t, 2, t.length - 2);
+        return t;
+    }
+
+    private void addFrame(Frame f) {
+        synchronized (lock) {
+            pending.addLast(f);
+            // over the limit while offline: drop the oldest audio
+            while (true) {
+                Frame first = inflight.isEmpty() ? pending.peekFirst() : inflight.peekFirst();
+                if (first == null || f.ts - first.ts <= MAX_BACKLOG_MS) break;
+                if (!inflight.isEmpty()) inflight.pollFirst(); else pending.pollFirst();
+                droppedMs += 23;
+            }
+            lock.notifyAll();
+        }
+    }
+
+    // ---------- network: connect, deliver, reconnect ----------
+    private void netLoop() {
         int attempt = 0;
-        while (running) {
-            setState(attempt == 0 ? CONNECTING : RETRYING, attempt == 0 ? null : error);
+        long finishDeadline = 0;
+        Thread watchdog = new Thread(this::watchdog, "rtmp-watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
+        while (true) {
+            if (finishing && finishDeadline == 0) finishDeadline = SystemClock.elapsedRealtime() + FINAL_FLUSH_MS;
+            if (finishing && (allDelivered() || SystemClock.elapsedRealtime() > finishDeadline)) break;
+            setState(attempt == 0 ? CONNECTING : RETRYING, attempt == 0 ? null : buffered());
             try {
-                session();
+                session(finishDeadline);
                 attempt = 0;
+                if (finishing) break; // delivered everything
             } catch (Exception e) {
-                if (!running) break;
-                error = e.getMessage() == null ? e.toString() : e.getMessage();
-                if (error.startsWith("REJECTED:")) {
-                    setState(FAILED, error.substring(9));
-                    running = false;
+                String msg = e.getMessage() == null ? e.toString() : e.getMessage();
+                if (msg.startsWith("REJECTED:")) {
+                    setState(FAILED, msg.substring(9));
                     break;
                 }
+                error = null;
                 attempt++;
-                setState(RETRYING, error);
-                long wait = Math.min(15000, 2000L * attempt);
-                long end = SystemClock.elapsedRealtime() + wait;
-                while (running && SystemClock.elapsedRealtime() < end) {
-                    queue.poll(); // discard audio while offline
-                    SystemClock.sleep(100);
+                setState(RETRYING, buffered());
+                long wait = Math.min(10000, 1000L * attempt);
+                long until = SystemClock.elapsedRealtime() + wait;
+                while (SystemClock.elapsedRealtime() < until) {
+                    if (finishing && SystemClock.elapsedRealtime() > finishDeadline && finishDeadline > 0) break;
+                    SystemClock.sleep(200);
+                    setState(RETRYING, buffered());
                 }
             } finally {
                 closeSocket();
+                requeueUnconfirmed();
             }
+        }
+        closeSocket();
+    }
+
+    private String buffered() {
+        int s = backlogSeconds();
+        return s <= 1 ? null : s + "s buffered";
+    }
+
+    private boolean allDelivered() {
+        synchronized (lock) { return encoderDone && pending.isEmpty() && inflight.isEmpty(); }
+    }
+
+    /** After a drop, anything the server did not confirm goes back to the front, in order. */
+    private void requeueUnconfirmed() {
+        synchronized (lock) {
+            while (!inflight.isEmpty()) pending.addFirst(inflight.pollLast());
+        }
+    }
+
+    private void watchdog() {
+        while (netThread != null && netThread.isAlive()) {
+            long now = SystemClock.elapsedRealtime();
+            long w = writeStartedAt;
+            boolean stalledWrite = w != 0 && now - w > STALL_MS;
+            // data keeps "sending" into phone buffers but the server has stopped confirming it
+            boolean silentServer = socket != null && serverAcks
+                    && bytesSent - ackedBytes > RECEIPT_GAP_BYTES && now - lastAckAt > RECEIPT_TIMEOUT_MS;
+            if (stalledWrite || silentServer) {
+                error = "CLOSED: network stalled";
+                closeSocket();
+            }
+            SystemClock.sleep(500);
         }
     }
 
     private void closeSocket() {
-        try { if (socket != null) socket.close(); } catch (Exception ignored) { }
+        Socket s = socket;
         socket = null;
+        try { if (s != null) s.close(); } catch (Exception ignored) { }
     }
 
-    private void session() throws Exception {
+    private void session(long finishDeadline) throws Exception {
         streamId = -1;
         published = false;
         bytesRead = 0;
         lastAck = 0;
+        bytesSent = 0;
+        ackedBytes = 0;
+        serverAcks = false;
+        error = null;
         Socket s = tls ? SSLSocketFactory.getDefault().createSocket() : new Socket();
+        s.setSendBufferSize(32 * 1024); // keeps little audio "in the air" when the network vanishes
         s.connect(new InetSocketAddress(host, port), 10000);
         s.setTcpNoDelay(true);
-        s.setSoTimeout(0);
         socket = s;
         out = new BufferedOutputStream(s.getOutputStream(), 16 * 1024);
         DataInputStream in = new DataInputStream(new BufferedInputStream(s.getInputStream()));
 
         handshake(in);
-        Thread reader = new Thread(() -> readLoop(in), "rtmp-read");
+        bytesSent = 0;
+        final Socket mine = s;
+        Thread reader = new Thread(() -> readLoop(in, mine), "rtmp-read");
         reader.setDaemon(true);
         reader.start();
 
         sendSetChunkSize(OUT_CHUNK);
+        sendAckWindow(ACK_WINDOW);
         Map<String, Object> obj = new LinkedHashMap<>();
         obj.put("app", app);
         obj.put("type", "nonprivate");
@@ -197,13 +399,72 @@ public class RtmpStreamer {
             SystemClock.sleep(20);
         }
         sendMetadata();
-        setState(LIVE, null);
-        streamAudio();
+        until = SystemClock.elapsedRealtime() + 10000;
+        while (aacHeader == null) { // encoder not ready yet
+            checkError();
+            if (SystemClock.elapsedRealtime() > until) throw new IOException("Audio encoder did not start");
+            SystemClock.sleep(20);
+        }
+        Frame firstPending;
+        synchronized (lock) { firstPending = pending.peekFirst(); }
+        writeMessage(4, 8, firstPending == null ? 0 : firstPending.ts, streamId, aacHeader);
+        deliver(finishDeadline);
+    }
+
+    /** Sends waiting frames in order and keeps them until the server confirms receipt. */
+    private void deliver(long finishDeadline) throws Exception {
+        long tailWait = 0; // once everything is sent at the end, wait briefly for the last receipts
+        while (true) {
+            checkError();
+            releaseConfirmed();
+            Frame f;
+            synchronized (lock) {
+                f = pending.pollFirst();
+                if (f == null) {
+                    if (finishing && encoderDone) {
+                        if (inflight.isEmpty()) break;
+                        if (finishDeadline > 0 && SystemClock.elapsedRealtime() > finishDeadline) break;
+                        // servers confirm every 32 KB, so the last few seconds may never be confirmed
+                        if (tailWait == 0) tailWait = SystemClock.elapsedRealtime() + 3000;
+                        else if (SystemClock.elapsedRealtime() > tailWait) { inflight.clear(); break; }
+                    }
+                    lock.wait(100);
+                    continue;
+                }
+                inflight.addLast(f);
+            }
+            writeMessage(4, 8, f.ts, streamId, f.tag);
+            f.endOffset = bytesSent;
+            int behind = backlogSeconds();
+            setState(behind > 3 ? CATCHING_UP : LIVE, behind > 3 ? behind + "s behind" : null);
+        }
+        if (!running) {
+            try {
+                sendCommand(3, 0, "FCUnpublish", 6, null, streamName);
+                sendCommand(3, 0, "deleteStream", 7, null, (double) streamId);
+            } catch (Exception ignored) { }
+        }
+    }
+
+    /** Drops frames the server has confirmed. Servers that never confirm: trust TCP after ~5 s. */
+    private void releaseConfirmed() {
+        synchronized (lock) {
+            long acked = ackedBytes;
+            while (!inflight.isEmpty()) {
+                Frame f = inflight.peekFirst();
+                Frame newest = inflight.peekLast();
+                boolean confirmed = serverAcks ? f.endOffset > 0 && f.endOffset <= acked
+                        : newest.ts - f.ts > NO_RECEIPT_KEEP_MS;
+                if (!confirmed) break;
+                inflight.pollFirst();
+            }
+            if (finishing && encoderDone && pending.isEmpty() && !serverAcks) inflight.clear();
+        }
     }
 
     private void checkError() throws IOException {
         String e = error;
-        if (e != null && (e.startsWith("REJECTED:") || e.startsWith("CLOSED"))) throw new IOException(e);
+        if (e != null && (e.startsWith("REJECTED:") || e.startsWith("CLOSED") || e.startsWith("Audio"))) throw new IOException(e);
         if (socket == null || socket.isClosed()) throw new IOException("Connection closed");
     }
 
@@ -230,95 +491,6 @@ public class RtmpStreamer {
         in.readFully(s2);
     }
 
-    // ---------- audio ----------
-    private void streamAudio() throws Exception {
-        MediaFormat f = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, RATE, 1);
-        f.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
-        f.setInteger(MediaFormat.KEY_BIT_RATE, kbps * 1000);
-        f.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384);
-        MediaCodec enc = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC);
-        enc.configure(f, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-        enc.start();
-        MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-        long samples = 0;
-        boolean headerSent = false;
-        queue.clear();
-        try {
-            while (running) {
-                checkError();
-                short[] pcm = queue.poll(200, TimeUnit.MILLISECONDS);
-                if (pcm != null && pcm.length == 0) break;
-                if (pcm == null) pcm = new short[RATE / 5]; // paused or slow: send 200 ms of silence
-                if (pcm != null) {
-                    int off = 0;
-                    while (off < pcm.length) {
-                        int ii = enc.dequeueInputBuffer(10000);
-                        if (ii < 0) break;
-                        ByteBuffer b = enc.getInputBuffer(ii);
-                        b.clear();
-                        int count = Math.min(pcm.length - off, b.remaining() / 2);
-                        for (int i = 0; i < count; i++) {
-                            short v = pcm[off + i];
-                            b.put((byte) v);
-                            b.put((byte) (v >> 8));
-                        }
-                        enc.queueInputBuffer(ii, 0, count * 2, samples * 1000000L / RATE, 0);
-                        samples += count;
-                        off += count;
-                    }
-                }
-                int oi;
-                while ((oi = enc.dequeueOutputBuffer(info, 0)) != MediaCodec.INFO_TRY_AGAIN_LATER) {
-                    if (oi == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        ByteBuffer csd = enc.getOutputFormat().getByteBuffer("csd-0");
-                        if (csd != null && !headerSent) { sendAacHeader(csd); headerSent = true; }
-                        continue;
-                    }
-                    if (oi < 0) continue;
-                    ByteBuffer ob = enc.getOutputBuffer(oi);
-                    if (ob != null && info.size > 0) {
-                        byte[] frame = new byte[info.size];
-                        ob.position(info.offset);
-                        ob.get(frame);
-                        if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
-                            if (!headerSent) { sendAacHeader(ByteBuffer.wrap(frame)); headerSent = true; }
-                        } else if (headerSent) {
-                            sendAudio(frame, (int) (info.presentationTimeUs / 1000));
-                        }
-                    }
-                    enc.releaseOutputBuffer(oi, false);
-                }
-            }
-        } finally {
-            try { enc.stop(); } catch (Exception ignored) { }
-            enc.release();
-        }
-        if (!running) {
-            try {
-                sendCommand(3, 0, "FCUnpublish", 6, null, streamName);
-                sendCommand(3, 0, "deleteStream", 7, null, (double) streamId);
-            } catch (Exception ignored) { }
-        }
-    }
-
-    private void sendAacHeader(ByteBuffer csd) throws IOException {
-        byte[] asc = new byte[csd.remaining()];
-        csd.get(asc);
-        byte[] tag = new byte[2 + asc.length];
-        tag[0] = (byte) 0xAF; // AAC, 44 kHz, 16-bit, (stereo flag is always set for AAC)
-        tag[1] = 0;           // sequence header
-        System.arraycopy(asc, 0, tag, 2, asc.length);
-        writeMessage(4, 8, 0, streamId, tag);
-    }
-
-    private void sendAudio(byte[] frame, int ts) throws IOException {
-        byte[] tag = new byte[2 + frame.length];
-        tag[0] = (byte) 0xAF;
-        tag[1] = 1; // raw AAC
-        System.arraycopy(frame, 0, tag, 2, frame.length);
-        writeMessage(4, 8, ts, streamId, tag);
-    }
-
     private void sendMetadata() throws IOException {
         ByteArrayOutputStream b = new ByteArrayOutputStream();
         amfString(b, "@setDataFrame");
@@ -341,6 +513,12 @@ public class RtmpStreamer {
         writeMessage(4, 18, 0, streamId, b.toByteArray());
     }
 
+    private void sendAckWindow(int size) throws IOException {
+        ByteArrayOutputStream b = new ByteArrayOutputStream();
+        writeInt(b, size);
+        writeMessage(2, 5, 0, 0, b.toByteArray());
+    }
+
     // ---------- RTMP messages ----------
     private void sendSetChunkSize(int size) throws IOException {
         ByteArrayOutputStream b = new ByteArrayOutputStream();
@@ -359,7 +537,9 @@ public class RtmpStreamer {
     private void writeMessage(int csid, int type, int ts, int msid, byte[] payload) throws IOException {
         synchronized (writeLock) {
             OutputStream o = out;
-            if (o == null) throw new IOException("Not connected");
+            if (o == null || socket == null) throw new IOException("Not connected");
+            writeStartedAt = SystemClock.elapsedRealtime();
+            try {
             boolean ext = ts >= 0xFFFFFF;
             o.write(csid & 0x3F); // fmt 0
             int t = ext ? 0xFFFFFF : ts;
@@ -380,6 +560,10 @@ public class RtmpStreamer {
                 off += n;
             }
             o.flush();
+            bytesSent += 12 + (ext ? 4 : 0) + len + ((len - 1) / OUT_CHUNK) * (1 + (ext ? 4 : 0));
+            } finally {
+                writeStartedAt = 0;
+            }
         }
     }
 
@@ -389,11 +573,11 @@ public class RtmpStreamer {
         ByteArrayOutputStream buf;
     }
 
-    private void readLoop(DataInputStream in) {
+    private void readLoop(DataInputStream in, Socket mine) {
         Map<Integer, ChunkState> states = new HashMap<>();
         int inChunk = 128;
         try {
-            while (running && socket != null) {
+            while (socket == mine) {
                 int b0 = in.readUnsignedByte();
                 count(1);
                 int fmt = b0 >>> 6;
@@ -429,13 +613,16 @@ public class RtmpStreamer {
                 if (st.buf.size() >= st.len) {
                     byte[] msg = st.buf.toByteArray();
                     st.buf.reset();
+                    if (socket != mine) break;
                     int r = handleMessage(st.type, msg);
                     if (r > 0) inChunk = r;
                 }
             }
         } catch (Exception e) {
-            if (running && error == null) error = "CLOSED: connection lost";
-            closeSocket();
+            if (socket == mine) { // ignore readers of earlier, already replaced connections
+                if (error == null) error = "CLOSED: connection lost";
+                closeSocket();
+            }
         }
     }
 
@@ -455,6 +642,12 @@ public class RtmpStreamer {
     private int handleMessage(int type, byte[] m) throws IOException {
         switch (type) {
             case 1: return readInt(m, 0) & 0x7fffffff;
+            case 3: // acknowledgement: total bytes the server has received
+                ackedBytes = (readInt(m, 0) & 0xffffffffL) - 3073; // minus the handshake
+                serverAcks = true;
+                lastAckAt = SystemClock.elapsedRealtime();
+                synchronized (lock) { lock.notifyAll(); }
+                return 0;
             case 5: windowSize = readInt(m, 0) & 0xffffffffL; return 0;
             case 6: { // set peer bandwidth -> answer with window ack size
                 ByteArrayOutputStream b = new ByteArrayOutputStream();

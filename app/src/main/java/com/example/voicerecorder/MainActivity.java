@@ -464,9 +464,11 @@ public class MainActivity extends AppCompatActivity
     private String streamLabel() {
         String st = svc != null ? svc.streamState() : null;
         if (st == null || RtmpStreamer.STOPPED.equals(st)) return "";
+        String d = svc.streamDetail();
         if (RtmpStreamer.LIVE.equals(st)) return "  \u00b7  LIVE";
+        if (RtmpStreamer.CATCHING_UP.equals(st)) return "  \u00b7  LIVE, CATCHING UP" + (d == null ? "" : " " + d.toUpperCase(Locale.ENGLISH));
         if (RtmpStreamer.CONNECTING.equals(st)) return "  \u00b7  CONNECTING";
-        if (RtmpStreamer.RETRYING.equals(st)) return "  \u00b7  RECONNECTING";
+        if (RtmpStreamer.RETRYING.equals(st)) return "  \u00b7  OFFLINE" + (d == null ? "" : ", " + d.toUpperCase(Locale.ENGLISH));
         return "  \u00b7  STREAM OFF";
     }
 
