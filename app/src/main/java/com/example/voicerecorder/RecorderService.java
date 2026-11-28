@@ -155,7 +155,7 @@ public class RecorderService extends Service {
         try {
             AudioRecorder r = new AudioRecorder();
             String mode = Storage.txMode(this);
-            if (privateRec) mode = "local"; // private recordings never leave the phone
+            if (privateRec && !"off".equals(mode)) mode = "local"; // private recordings never leave the phone
             if ("local".equals(mode)) {
                 if (LocalTranscriber.isModelReady(this)) {
                     localSession = new LocalTranscriber.Session(this, Transcriber.stem(file.getName()),

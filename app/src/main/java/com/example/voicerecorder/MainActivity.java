@@ -281,7 +281,7 @@ public class MainActivity extends AppCompatActivity
                 settingsSheet.show();
                 return;
             }
-            if (!streamNext && privateNext) {
+            if (!streamNext && isPrivateOn()) {
                 toast("Turn off Private to stream. Private recordings never leave the phone.");
                 return;
             }
@@ -388,6 +388,14 @@ public class MainActivity extends AppCompatActivity
     @Override public void onPickTranscriptFolder() { txFolderLauncher.launch(null); }
     @Override public void onSettingsClosed() {
         txtFolder.setText(Storage.folderLabel(this));
+        useMp3 = prefs.getBoolean("mp3", true);
+        privateNext = prefs.getBoolean("privateNext", false);
+        if (isPrivateOn() && streamNext) {
+            streamNext = false; // private recordings are never streamed
+            prefs.edit().putBoolean("streamNext", false).apply();
+            toast("Live turned off: Private is on");
+        }
+        renderChips();
         renderTxChip();
     }
 
@@ -444,8 +452,8 @@ public class MainActivity extends AppCompatActivity
                 .setAction(RecorderService.ACTION_START)
                 .putExtra(RecorderService.EXTRA_MP3, useMp3)
                 .putExtra(RecorderService.EXTRA_KBPS, quality == 1 ? 128 : 64)
-                .putExtra(RecorderService.EXTRA_PRIVATE, privateNext)
-                .putExtra(RecorderService.EXTRA_STREAM, streamNext && !privateNext && Storage.hasStreamTarget(this));
+                .putExtra(RecorderService.EXTRA_PRIVATE, isPrivateOn())
+                .putExtra(RecorderService.EXTRA_STREAM, streamNext && !isPrivateOn() && Storage.hasStreamTarget(this));
         ContextCompat.startForegroundService(this, i);
         savedBar.setVisibility(View.GONE);
         ui.removeCallbacks(hideSaved);
@@ -459,6 +467,11 @@ public class MainActivity extends AppCompatActivity
     private void sendToService(String action) {
         startService(new Intent(this, RecorderService.class).setAction(action));
     }
+
+    /** Private only applies while transcription is on (it lives in that Settings section). */
+    private boolean isPrivateOn() { return privateNext && transcriptionOn(); }
+
+    private boolean transcriptionOn() { return !"off".equals(Storage.txMode(this)); }
 
     /** "  ·  LIVE", "  ·  CONNECTING..." etc. while streaming. */
     private String streamLabel() {
@@ -837,11 +850,12 @@ public class MainActivity extends AppCompatActivity
         if (item.hasTranscript) {
             d.item("View transcript", R.drawable.ic_doc, false, () -> openTranscript(Transcriber.stem(f.getName())));
         }
-        if (LocalTranscriber.isModelReady(this)) {
+        // transcribe actions only when transcription is turned on in Settings; existing transcripts stay viewable
+        if (transcriptionOn() && LocalTranscriber.isModelReady(this)) {
             d.item(item.hasTranscript ? "Re-transcribe on this phone" : "Transcribe on this phone",
                     R.drawable.ic_bolt, false, () -> transcribeOnDevice(f));
         }
-        if (!item.isPrivate) {
+        if (transcriptionOn() && !item.isPrivate) {
             d.item(item.hasTranscript ? "Re-transcribe with Groq" : "Transcribe with Groq",
                     R.drawable.ic_bolt, false, () -> transcribeWithGroq(f));
         }

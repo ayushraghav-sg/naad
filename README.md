@@ -14,6 +14,8 @@ A simple, privacy-first Android voice recorder with live transcription.
 - Light and Dark theme support (follows system theme)
 
 ## Transcription
+Transcription is off by default. Turn it on in Settings > Transcription; the engine, save interval and Private switch appear once it is on, and the recording menu then shows Transcribe. Existing transcripts stay viewable when it is off.
+
 - **Works with both MP3 and M4A recordings.**
 - **On device (private):** Vosk speech recognition, works offline with an anti-aliased 16 kHz resampler. Choose the Small (40 MB) or Better (128 MB) English model in Settings.
 - **Groq (cloud):** Whisper via the Groq API (`whisper-large-v3-turbo` or `whisper-large-v3`, Auto/English/Hindi language). Add and test your own API key in Settings (free key at console.groq.com). Large recordings (>24 MB) are automatically split into chunks when sent to Groq.

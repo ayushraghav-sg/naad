@@ -246,14 +246,48 @@ public final class SettingsSheet {
                         mins[0] == intVals[i] ? R.drawable.bg_chip : R.drawable.bg_chip_off);
             }
         };
+        // Transcription is one switch (off by default); the engine is remembered while it is off
+        androidx.appcompat.widget.SwitchCompat txSwitch = v.findViewById(R.id.txSwitch);
+        androidx.appcompat.widget.SwitchCompat swPrivate = v.findViewById(R.id.swPrivate);
+        View txEngineRow = v.findViewById(R.id.txEngineRow), privateRow = v.findViewById(R.id.privateRow);
+        final String[] engine = {"groq".equals(mode[0]) ? "groq"
+                : "local".equals(mode[0]) ? "local" : prefs.getString("txEngine", "local")};
+        final boolean[] priv = {prefs.getBoolean("privateNext", false)};
+        swPrivate.setChecked(priv[0]);
+        swPrivate.setOnCheckedChangeListener((b, on) -> priv[0] = on);
+        Runnable onOff = () -> {
+            boolean on = !"off".equals(mode[0]);
+            txEngineRow.setVisibility(on ? View.VISIBLE : View.GONE);
+            privateRow.setVisibility(on ? View.VISIBLE : View.GONE);
+            txHint.setVisibility(on ? View.VISIBLE : View.GONE);
+            if (!on) { intervalSection.setVisibility(View.GONE); groqSection.setVisibility(View.GONE); localSection.setVisibility(View.GONE); }
+        };
+        txSwitch.setChecked(!"off".equals(mode[0]));
+        txSwitch.setOnCheckedChangeListener((b, on) -> {
+            mode[0] = on ? engine[0] : "off";
+            txUpd.run();
+            onOff.run();
+        });
         txOff.setOnClickListener(x -> { mode[0] = "off"; txUpd.run(); });
-        txLocal.setOnClickListener(x -> { mode[0] = "local"; txUpd.run(); });
-        txGroq.setOnClickListener(x -> { mode[0] = "groq"; txUpd.run(); });
+        txLocal.setOnClickListener(x -> { mode[0] = engine[0] = "local"; txUpd.run(); });
+        txGroq.setOnClickListener(x -> { mode[0] = engine[0] = "groq"; txUpd.run(); });
         for (int i = 0; i < intIds.length; i++) {
             final int val = intVals[i];
             v.findViewById(intIds[i]).setOnClickListener(x -> { mins[0] = val; txUpd.run(); });
         }
         txUpd.run();
+        onOff.run();
+
+        // recording format (moved here from the main screen)
+        TextView setMp3 = v.findViewById(R.id.setMp3), setM4a = v.findViewById(R.id.setM4a);
+        final boolean[] mp3 = {prefs.getBoolean("mp3", true)};
+        Runnable fmtUpd = () -> {
+            setMp3.setBackgroundResource(mp3[0] ? R.drawable.bg_chip : R.drawable.bg_chip_off);
+            setM4a.setBackgroundResource(mp3[0] ? R.drawable.bg_chip_off : R.drawable.bg_chip);
+        };
+        setMp3.setOnClickListener(x -> { mp3[0] = true; fmtUpd.run(); });
+        setM4a.setOnClickListener(x -> { mp3[0] = false; fmtUpd.run(); });
+        fmtUpd.run();
 
         // live stream
         EditText edStreamUrl = v.findViewById(R.id.edStreamUrl);
@@ -281,6 +315,9 @@ public final class SettingsSheet {
                     prefs.edit()
                             .putString("prefix", p.isEmpty() ? "Recording" : p)
                             .putString("txMode", mode[0])
+                            .putString("txEngine", engine[0])
+                            .putBoolean("privateNext", priv[0])
+                            .putBoolean("mp3", mp3[0])
                             .putInt("txMinutes", mins[0])
                             .putString("voskModel", voskModel[0])
                             .putString("groqModel", groqModel[0])
