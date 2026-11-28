@@ -24,6 +24,14 @@ A simple, privacy-first Android voice recorder with live transcription.
 
 The Groq API key is encrypted with the Android KeyStore on the phone and excluded from cloud backups. It is not part of this code.
 
+## Live streaming (RTMP)
+- Stream the recording's audio live to any RTMP or RTMPS server while it records.
+- In Settings > Live stream, enter the server URL (for example `rtmp://server/live`) and the stream key. The key can also be pasted at the end of the URL.
+- Turn on **Live** in the recorder card before recording. The status line shows LIVE, CONNECTING or RECONNECTING.
+- Audio only (AAC, 64 or 128 kbps, mono 44.1 kHz). Platforms that require video, such as YouTube Live, will not accept an audio-only stream.
+- If the connection drops, recording continues and the stream reconnects automatically. Pauses are sent as silence so the stream stays up.
+- The stream key is stored encrypted on the phone. Private recordings are never streamed.
+
 ## Build
 Built with Code on the Go on Android (AGP 8.7.3, Gradle 8.10.2, compileSdk/targetSdk 35). Open the project folder and build.
 The first build needs internet to download the libraries:

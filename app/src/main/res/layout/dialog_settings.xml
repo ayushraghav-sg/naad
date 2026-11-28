@@ -121,4 +121,26 @@
                 android:text="Stored encrypted on this phone. Get a free key at console.groq.com."/>
         </LinearLayout>
     </LinearLayout>
+
+    <!-- Live stream -->
+    <LinearLayout style="@style/SetCard">
+        <TextView style="@style/SetHeading" android:text="Live stream (RTMP)"/>
+        <TextView style="@style/SetLabel" android:text="Server URL"/>
+        <EditText android:id="@+id/edStreamUrl" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:singleLine="true"
+            android:inputType="textUri" android:hint="rtmp://server/live"/>
+        <TextView style="@style/SetLabel" android:layout_marginTop="8dp" android:text="Stream key"/>
+        <EditText android:id="@+id/edStreamKey" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:singleLine="true"
+            android:inputType="textPassword" android:hint="Stream key"/>
+        <TextView style="@style/SetLabel" android:layout_marginTop="8dp" android:text="Stream quality"/>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:orientation="horizontal">
+            <TextView android:id="@+id/st64" style="@style/Chip" android:text="64 kbps"/>
+            <TextView android:id="@+id/st128" style="@style/Chip" android:text="128 kbps"
+                android:layout_marginStart="8dp"/>
+        </LinearLayout>
+        <TextView style="@style/SetLabel" android:layout_width="match_parent" android:layout_marginTop="8dp"
+            android:text="Turn on Live in the recorder card before recording. Audio only (AAC), rtmp:// or rtmps://. The key is stored encrypted on this phone. Recording continues even if the stream drops. Private recordings are never streamed."/>
+    </LinearLayout>
 </LinearLayout>

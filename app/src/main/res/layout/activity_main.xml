@@ -76,6 +76,9 @@
             <TextView android:id="@+id/chipPrivate" style="@style/Chip" android:text="Private"
                 android:layout_marginStart="8dp" android:drawableStart="@drawable/ic_lock"
                 android:drawablePadding="6dp"/>
+            <TextView android:id="@+id/chipLive" style="@style/Chip" android:text="Live"
+                android:layout_marginStart="8dp" android:drawableStart="@drawable/ic_live"
+                android:drawablePadding="6dp" android:contentDescription="Stream live while recording"/>
         </LinearLayout>
 
         <!-- Shown after a recording is saved -->

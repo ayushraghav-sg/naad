@@ -97,6 +97,28 @@ public final class Storage {
         return KeyStoreHelper.decrypt(raw).trim();
     }
 
+    public static String streamUrl(Context c) { return prefs(c).getString("streamUrl", "").trim(); }
+
+    public static int streamKbps(Context c) { return prefs(c).getInt("streamKbps", 128); }
+
+    public static String streamKey(Context c) {
+        String raw = prefs(c).getString("streamKey", "");
+        if (raw == null || raw.isEmpty()) return "";
+        return KeyStoreHelper.isEncrypted(raw) ? KeyStoreHelper.decrypt(raw).trim() : raw.trim();
+    }
+
+    public static void setStream(Context c, String url, String key, int kbps) {
+        String k = key == null ? "" : key.trim();
+        SharedPreferences.Editor ed = prefs(c).edit()
+                .putString("streamUrl", url == null ? "" : url.trim())
+                .putInt("streamKbps", kbps);
+        if (k.isEmpty()) ed.remove("streamKey");
+        else ed.putString("streamKey", KeyStoreHelper.encrypt(k));
+        ed.apply();
+    }
+
+    public static boolean hasStreamTarget(Context c) { return !streamUrl(c).isEmpty(); }
+
     public static void setGroqKey(Context c, String key) {
         String trimmed = key == null ? "" : key.trim();
         SharedPreferences.Editor ed = prefs(c).edit();

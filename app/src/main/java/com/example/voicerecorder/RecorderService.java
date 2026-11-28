@@ -33,6 +33,7 @@ public class RecorderService extends Service {
     public static final String EXTRA_MP3 = "mp3";
     public static final String EXTRA_KBPS = "kbps";
     public static final String EXTRA_PRIVATE = "private";
+    public static final String EXTRA_STREAM = "stream";
 
     public static final long LOW_SPACE = 50L * 1024 * 1024; // auto-stop below 50 MB
     private static final long SPACE_CHECK_MS = 5000L;
@@ -58,7 +59,9 @@ public class RecorderService extends Service {
 
     private AudioRecorder recorder;
     private LocalTranscriber.Session localSession;
-    private boolean privateRec;
+    private boolean privateRec, streamRec;
+    private RtmpStreamer streamer;
+    private volatile String streamState, streamDetail;
     private File file;
     private boolean recording, paused, pausedByFocus;
     private int sessionId = 0;
@@ -119,6 +122,7 @@ public class RecorderService extends Service {
         String a = intent == null ? null : intent.getAction();
         if (ACTION_START.equals(a)) {
             privateRec = intent.getBooleanExtra(EXTRA_PRIVATE, false);
+            streamRec = intent.getBooleanExtra(EXTRA_STREAM, false) && !privateRec;
             start(intent.getBooleanExtra(EXTRA_MP3, true), intent.getIntExtra(EXTRA_KBPS, 128));
         } else if (ACTION_PAUSE.equals(a)) {
             pausedByFocus = false;
@@ -156,8 +160,7 @@ public class RecorderService extends Service {
                 if (LocalTranscriber.isModelReady(this)) {
                     localSession = new LocalTranscriber.Session(this, Transcriber.stem(file.getName()),
                             AudioRecorder.rate(), Storage.txMinutes(this));
-                    final LocalTranscriber.Session ls = localSession;
-                    r.setSink(ls::feed);
+                    // fed below together with the live stream
                 } else {
                     main.post(() -> notifyError("Download the on-device model in Settings to transcribe privately."));
                 }
@@ -166,6 +169,22 @@ public class RecorderService extends Service {
                 r.setChunks(this, Transcriber.pendingDir(this), base, Storage.txMinutes(this),
                         chunk -> Transcriber.get(this).chunkReady());
             }
+            if (streamRec) {
+                try {
+                    streamer = new RtmpStreamer(Storage.streamUrl(this), Storage.streamKey(this),
+                            Storage.streamKbps(this), (st, detail) -> main.post(() -> onStream(st, detail)));
+                } catch (IllegalArgumentException bad) {
+                    streamer = null;
+                    final String msg = bad.getMessage();
+                    main.post(() -> notifyError("Live stream not started: " + msg));
+                }
+            }
+            final LocalTranscriber.Session lsF = localSession;
+            final RtmpStreamer stF = streamer;
+            if (lsF != null || stF != null) r.setSink((pcm, n) -> {
+                if (lsF != null) lsF.feed(pcm, n);
+                if (stF != null) stF.feed(pcm, n);
+            });
             r.setErrorListener(err -> main.post(() -> {
                 if (recording && sessionId == thisSession) {
                     notifyError("Recording stopped due to a storage or audio error.");
@@ -174,9 +193,11 @@ public class RecorderService extends Service {
             }));
             r.start(file, kbps, useMp3);
             recorder = r;
+            if (streamer != null) streamer.start();
         } catch (Exception e) {
             abandonFocus();
             if (localSession != null) { localSession.finish(); localSession = null; }
+            stopStream();
             if (file != null) file.delete();
             file = null;
             finishService();
@@ -245,6 +266,10 @@ public class RecorderService extends Service {
                 try { wakeLock.release(); } catch (Exception ignored) { }
             }
         }
+        final RtmpStreamer stS = streamer;
+        streamer = null;
+        if (stS != null) new Thread(stS::stop, "rtmp-stop").start();
+        streamState = null;
         if (!ok) {
             if (localSession != null) { localSession.finish(); localSession = null; }
             if (f != null) {
@@ -272,6 +297,27 @@ public class RecorderService extends Service {
                 }
             });
         }, "rec-finalize").start();
+    }
+
+    /** null when not streaming, otherwise one of the RtmpStreamer states. */
+    public String streamState() { return streamState; }
+    public String streamDetail() { return streamDetail; }
+
+    private void onStream(String st, String detail) {
+        if (!recording) return;
+        String prev = streamState;
+        streamState = st;
+        streamDetail = detail;
+        if (RtmpStreamer.FAILED.equals(st)) notifyError("Live stream stopped: " + detail + ". Recording continues.");
+        else if (RtmpStreamer.RETRYING.equals(st) && RtmpStreamer.LIVE.equals(prev))
+            notifyError("Live stream lost, reconnecting. Recording continues.");
+        updateNotification();
+        notifyState();
+    }
+
+    private void stopStream() {
+        if (streamer != null) { final RtmpStreamer s = streamer; streamer = null; new Thread(s::stop).start(); }
+        streamState = null;
     }
 
     public File takeLastSaved() { File f = lastSaved; lastSaved = null; return f; }
@@ -384,7 +430,9 @@ public class RecorderService extends Service {
         NotificationCompat.Builder b = new NotificationCompat.Builder(this, CHANNEL)
                 .setSmallIcon(R.drawable.ic_notif)
                 .setContentTitle(title)
-                .setContentText(file != null ? file.getName() : getString(R.string.app_name))
+                .setContentText((RtmpStreamer.LIVE.equals(streamState) ? "LIVE  \u00b7  "
+                        : streamState != null && !RtmpStreamer.STOPPED.equals(streamState) ? "Stream connecting  \u00b7  " : "")
+                        + (file != null ? file.getName() : getString(R.string.app_name)))
                 .setColor(0xFFE8771E)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)

@@ -255,6 +255,21 @@ public final class SettingsSheet {
         }
         txUpd.run();
 
+        // live stream
+        EditText edStreamUrl = v.findViewById(R.id.edStreamUrl);
+        EditText edStreamKey = v.findViewById(R.id.edStreamKey);
+        TextView st64 = v.findViewById(R.id.st64), st128 = v.findViewById(R.id.st128);
+        edStreamUrl.setText(Storage.streamUrl(ctx));
+        edStreamKey.setText(Storage.streamKey(ctx));
+        final int[] stKbps = {Storage.streamKbps(ctx)};
+        Runnable stUpd = () -> {
+            st64.setBackgroundResource(stKbps[0] == 64 ? R.drawable.bg_chip : R.drawable.bg_chip_off);
+            st128.setBackgroundResource(stKbps[0] == 128 ? R.drawable.bg_chip : R.drawable.bg_chip_off);
+        };
+        st64.setOnClickListener(x -> { stKbps[0] = 64; stUpd.run(); });
+        st128.setOnClickListener(x -> { stKbps[0] = 128; stUpd.run(); });
+        stUpd.run();
+
         new NaadDialog(ctx, NaadDialog.FULL)
                 .title("Settings")
                 .view(v, false)
@@ -272,6 +287,8 @@ public final class SettingsSheet {
                             .putString("groqLang", groqLang[0])
                             .apply();
                     Storage.setGroqKey(ctx, edKey.getText().toString());
+                    Storage.setStream(ctx, edStreamUrl.getText().toString(),
+                            edStreamKey.getText().toString(), stKbps[0]);
                     if ("groq".equals(mode[0]) && Storage.groqKey(ctx).isEmpty()) {
                         Toast.makeText(ctx, "Add your Groq API key to transcribe", Toast.LENGTH_SHORT).show();
                     } else if ("local".equals(mode[0]) && !LocalTranscriber.isModelReady(ctx)) {

@@ -84,7 +84,8 @@ public class MainActivity extends AppCompatActivity
     private View notifBar, transcriptBox, savedBar, optionsRow, optionsRow2, searchBar;
     private TextView txtFree, txtTranscript, transcriptLabel, txtSort, txtEmpty;
     private TextView txtTimer, txtState, txtFolder, txtListHeader;
-    private TextView chipMp3, chipM4a, chipVoice, chipHigh, chipTx, chipPrivate;
+    private TextView chipMp3, chipM4a, chipVoice, chipHigh, chipTx, chipPrivate, chipLive;
+    private boolean streamNext = false;
     private EditText edSearch;
     private WaveformView wave;
     private ListView list;
@@ -147,7 +148,7 @@ public class MainActivity extends AppCompatActivity
             if (rec) {
                 if (!svc.isPaused()) {
                     wave.add((float) Math.sqrt(svc.level()));
-                    txtState.setText(blinkOn ? "\u25CF  REC" : "     REC");
+                    txtState.setText((blinkOn ? "\u25CF  REC" : "     REC") + streamLabel());
                     txtTimer.setAlpha(1f);
                 } else {
                     txtTimer.setAlpha(blinkOn ? 1f : 0.35f);
@@ -223,6 +224,8 @@ public class MainActivity extends AppCompatActivity
         transcriptBox = findViewById(R.id.transcriptBox);
         chipTx = findViewById(R.id.chipTx);
         chipPrivate = findViewById(R.id.chipPrivate);
+        chipLive = findViewById(R.id.chipLive);
+        streamNext = prefs.getBoolean("streamNext", false);
         txtSort = findViewById(R.id.txtSort);
         txtTimer = findViewById(R.id.txtTimer);
         txtState = findViewById(R.id.txtState);
@@ -261,11 +264,31 @@ public class MainActivity extends AppCompatActivity
         chipPrivate.setOnClickListener(v -> {
             if (svc != null && svc.isRecording()) return;
             privateNext = !privateNext;
-            prefs.edit().putBoolean("privateNext", privateNext).apply();
+            if (privateNext && streamNext) {
+                streamNext = false; // private recordings are never streamed
+                toast("Live turned off for private recordings");
+            }
+            prefs.edit().putBoolean("privateNext", privateNext).putBoolean("streamNext", streamNext).apply();
             renderTxChip();
             if (privateNext) toast(LocalTranscriber.isModelReady(this)
                     ? "Private: transcribed on this phone only"
                     : "Private: nothing leaves the phone. Download the model in Settings for transcripts.");
+        });
+        chipLive.setOnClickListener(v -> {
+            if (svc != null && svc.isRecording()) return;
+            if (!streamNext && !Storage.hasStreamTarget(this)) {
+                toast("Add your RTMP server and stream key in Settings");
+                settingsSheet.show();
+                return;
+            }
+            if (!streamNext && privateNext) {
+                toast("Turn off Private to stream. Private recordings never leave the phone.");
+                return;
+            }
+            streamNext = !streamNext;
+            prefs.edit().putBoolean("streamNext", streamNext).apply();
+            renderTxChip();
+            if (streamNext) toast("Live on: the next recording is streamed to your server");
         });
         txtSort.setOnClickListener(v -> sortMenu());
         btnSort.setOnClickListener(v -> sortMenu());
@@ -421,7 +444,8 @@ public class MainActivity extends AppCompatActivity
                 .setAction(RecorderService.ACTION_START)
                 .putExtra(RecorderService.EXTRA_MP3, useMp3)
                 .putExtra(RecorderService.EXTRA_KBPS, quality == 1 ? 128 : 64)
-                .putExtra(RecorderService.EXTRA_PRIVATE, privateNext);
+                .putExtra(RecorderService.EXTRA_PRIVATE, privateNext)
+                .putExtra(RecorderService.EXTRA_STREAM, streamNext && !privateNext && Storage.hasStreamTarget(this));
         ContextCompat.startForegroundService(this, i);
         savedBar.setVisibility(View.GONE);
         ui.removeCallbacks(hideSaved);
@@ -434,6 +458,16 @@ public class MainActivity extends AppCompatActivity
 
     private void sendToService(String action) {
         startService(new Intent(this, RecorderService.class).setAction(action));
+    }
+
+    /** "  ·  LIVE", "  ·  CONNECTING..." etc. while streaming. */
+    private String streamLabel() {
+        String st = svc != null ? svc.streamState() : null;
+        if (st == null || RtmpStreamer.STOPPED.equals(st)) return "";
+        if (RtmpStreamer.LIVE.equals(st)) return "  \u00b7  LIVE";
+        if (RtmpStreamer.CONNECTING.equals(st)) return "  \u00b7  CONNECTING";
+        if (RtmpStreamer.RETRYING.equals(st)) return "  \u00b7  RECONNECTING";
+        return "  \u00b7  STREAM OFF";
     }
 
     private void renderRecordingState() {
@@ -452,7 +486,7 @@ public class MainActivity extends AppCompatActivity
         wave.setVisibility(rec || savedBar.getVisibility() == View.VISIBLE ? View.VISIBLE : View.GONE);
         if (rec) {
             savedBar.setVisibility(View.GONE);
-            txtState.setText(paused ? "PAUSED" : "\u25CF  REC");
+            txtState.setText((paused ? "PAUSED" : "\u25CF  REC") + streamLabel());
             File cur = svc.currentFile();
             if (cur != null) txtFree.setText(cur.getName());
             txtState.setTextColor(ContextCompat.getColor(this,
@@ -552,6 +586,8 @@ public class MainActivity extends AppCompatActivity
         chipTx.setText(label);
         chipTx.setBackgroundResource("off".equals(mode) && !privateNext ? R.drawable.bg_chip_off : R.drawable.bg_chip);
         chipPrivate.setBackgroundResource(privateNext ? R.drawable.bg_chip : R.drawable.bg_chip_off);
+        chipLive.setBackgroundResource(streamNext ? R.drawable.bg_chip : R.drawable.bg_chip_off);
+        chipLive.setContentDescription(streamNext ? "Live on: next recording is streamed" : "Live off");
         chipPrivate.setContentDescription(privateNext ? "Private on: transcribe on this phone only" : "Private off");
     }
 
