@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Release tag (e.g. v2.1.0)'
         required: false
-        default: 'v2.1.0'
+        default: 'v2.2.0'
 
 permissions:
   contents: write
@@ -45,7 +45,7 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME}"
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            TAG="${INPUT_TAG:-v2.1.0}"
+            TAG="${INPUT_TAG:-v2.2.0}"
           fi
           echo "RELEASE_TAG=${TAG}" >> "$GITHUB_ENV"
           mkdir -p dist
